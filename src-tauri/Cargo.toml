@@ -1,0 +1,25 @@
+[package]
+name = "pirosman-studio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pirosman Studio desktop application"
+
+[lib]
+name = "pirosman_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pirosman-core = { path = "../crates/pirosman-core" }
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+trash = "5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

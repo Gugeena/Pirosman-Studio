@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/pirosman-core", "crates/pirosman-ofxhost", "crates/pirosman-ofx-samples", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0-alpha"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Pirosman Studio contributors"]
+
+[profile.dev]
+# Keep debug builds snappy while still optimizing heavy deps (sha2, zip).
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2

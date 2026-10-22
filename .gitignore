@@ -1,0 +1,56 @@
+# Build output
+node_modules/
+/dist/
+target/
+src-tauri/gen/
+*.partial.*
+/dist-release/
+
+# Pinned FFmpeg fetched at build time (scripts/fetch-ffmpeg.ps1)
+/.cache/
+src-tauri/ffmpeg/
+# OpenFX host and sample plugins built by scripts/build-ofx.ps1
+src-tauri/ofx/
+
+# Local tool state
+/.impeccable/
+/.claude/
+
+# Local trailer projects: not part of the app
+/promo/
+/promo-remotion/
+
+# Local design, research and reference notes: not needed to build or run the app.
+/PRODUCT.md
+/DESIGN.md
+/CLAUDE.md
+/RESEARCH.md
+/KNOWN_LIMITATIONS.md
+/docs/PROJECT_FORMAT.md
+/docs/RENDERING.md
+/docs/REVISIONS_AND_BUNDLES.md
+/docs/resolve-inspection.json
+/scripts/gen-parity.mjs
+
+# Logs, temporary files and test output
+*.log
+*.dmp
+*.tmp
+*.swp
+*~
+/coverage/
+*.profraw
+
+# Local environment and configuration
+.env
+.env.*
+*.local
+
+# OS and editor clutter
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.code-workspace

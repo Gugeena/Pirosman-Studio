@@ -1,0 +1,12 @@
+[package]
+name = "pirosman-ofx-samples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pirosman Samples: a small OpenFX plugin bundle shipped with Pirosman Studio."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+pirosman-ofxhost = { path = "../pirosman-ofxhost" }

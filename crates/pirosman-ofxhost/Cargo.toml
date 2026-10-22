@@ -1,0 +1,18 @@
+[package]
+name = "pirosman-ofxhost"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Out-of-process OpenFX plugin host for Pirosman Studio."
+
+[lib]
+name = "pirosman_ofxhost"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pirosman-ofxhost"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
