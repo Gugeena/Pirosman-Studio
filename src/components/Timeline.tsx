@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { cssUrl } from "../lib/files";
 import { api, type Clip, type Marker, type MarkerColor, type MediaInfo, type MediaRef, type TitleClip, type Track, type TransitionKind } from "../lib/api";
-import { clipDur, clipEnd, fmtSpeed, sourceFrameAt, speedOf } from "../lib/clip";
+import { clipDur, clipEnd, fmtSpeed, nextClip, overlaps, sourceFrameAt, speedOf, timelineFrameOf, TRANSITIONS } from "../lib/clip";
 import { infoMap, mediaMap, projectDuration, promptText, run, useUI } from "../lib/store";
 import { timecode } from "../lib/time";
 import { GreaseMark } from "./GreaseMark";
@@ -129,6 +129,8 @@ export function Timeline({ compact = false }: { compact?: boolean }) {
   const [tool, setTool] = useState<Tool>("select");
   const [snap, setSnap] = useState(true);
   const [drag, setDrag] = useState<Drag | null>(null);
+  // A keyframe marker being dragged along its clip: `frame` is its source frame, `dx` the drag in frames.
+  const [kfDrag, setKfDrag] = useState<{ clipId: string; frame: number; dx: number } | null>(null);
   const [snapAt, setSnapAt] = useState<number | null>(null);
   const [scroll, setScroll] = useState({ left: 0, top: 0, width: 800 });
   const dnd = useUI((s) => s.drag);
@@ -215,7 +217,14 @@ export function Timeline({ compact = false }: { compact?: boolean }) {
         const f = Math.max(0, Math.round((x - r.left + el.scrollLeft - GUTTER) / s.pxPerFrame));
         run(api.overwriteEdit({ media_id: payload.id, track_id: t.id, start: f, source_in: null, source_out: null }));
       } else {
-        const id = hitAt(x, y)?.closest("[data-clip]")?.getAttribute("data-clip");
+        let id = hitAt(x, y)?.closest("[data-clip]")?.getAttribute("data-clip");
+        // A transition dropped on a clip's second half goes on the cut at its end.
+        const hit = id ? s.view.project.tracks.flatMap((t) => t.clips.map((c) => ({ t, c }))).find((h) => h.c.id === id) : undefined;
+        if (payload.kind === "transition" && hit) {
+          const f = (x - r.left + el.scrollLeft - GUTTER) / s.pxPerFrame;
+          const next = nextClip(hit.t, hit.c);
+          if (next && f > hit.c.start + clipDur(hit.c) / 2) id = next.id;
+        }
         if (id) void applyEffect(payload, [id]);
         else s.toast("info", "Drop the effect onto a video clip.");
       }
@@ -461,9 +470,8 @@ export function Timeline({ compact = false }: { compact?: boolean }) {
   const transitionItems = (c: Clip, hasPrev: boolean): CtxItem[] => {
     const add = (kind: TransitionKind, frames: number) => run(api.updateClip(c.id, { transition_in: { kind, duration_frames: frames } }));
     return [
-      { text: "Add cross dissolve (1 s)", enabled: hasPrev, action: () => add("cross_dissolve", Math.round(fpsN)) },
+      ...(Object.keys(TRANSITIONS) as TransitionKind[]).map((k) => ({ text: `Add ${TRANSITIONS[k].toLowerCase()} (1 s)`, enabled: hasPrev, action: () => add(k, Math.round(fpsN)) })),
       { text: "Add cross dissolve (½ s)", enabled: hasPrev, action: () => add("cross_dissolve", halfSec) },
-      { text: "Add dip to black (1 s)", enabled: hasPrev, action: () => add("dip_to_black", Math.round(fpsN)) },
       { text: "Remove transition", enabled: !!c.transition_in, action: () => run(api.updateClip(c.id, { transition_in: null })) },
     ];
   };
@@ -793,6 +801,48 @@ export function Timeline({ compact = false }: { compact?: boolean }) {
                       {graded && <span className="fx">{c?.lut ? "LUT" : "CC"}</span>}
                       {speedBadge && <span className="speed-badge">{speedBadge}</span>}
                       {c?.ofx?.some((f) => f.enabled) && <span className="speed-badge ofx-badge" title={`OpenFX: ${c.ofx.filter((f) => f.enabled).map((f) => f.label).join(" → ")}`}>OFX</span>}
+                      {!isAudio && c && (c.keyframes ?? []).map((k) => {
+                        // Keyframes sit on source frames: they travel with a moved clip, stay put when it is trimmed.
+                        const moving = drag?.moved && (drag.kind === "move" || drag.kind === "slide") && (drag.item.id === it.id || drag.linked.includes(it.id));
+                        const dragged = kfDrag?.clipId === c.id && kfDrag.frame === k.frame ? kfDrag.dx : 0;
+                        const at = Math.round(timelineFrameOf(c, k.frame)) + dragged;
+                        const kx = GUTTER + (at + (moving ? drag!.dx : 0)) * ppf - g.x;
+                        if (kx < 0 || kx > g.w) return null;
+                        const on = selection.includes(c.id) && playhead === at;
+                        return (
+                          <span
+                            key={k.frame} className={`kf-mark ${on ? "on" : ""}`} style={{ left: kx }}
+                            title={`Keyframe at ${timecode(at, rate)} — click to select, drag to move`}
+                            onPointerDown={(e) => {
+                              if (e.button !== 0) return;
+                              e.stopPropagation();
+                              set({ selection: [c.id], playhead: at, playing: false });
+                              if (t.locked) return;
+                              const el = e.currentTarget;
+                              el.setPointerCapture(e.pointerId);
+                              const x0 = e.clientX, lo = c.start - at, hi = clipEnd(c) - 1 - at;
+                              let dx = 0;
+                              const mv = (ev: PointerEvent) => {
+                                dx = Math.max(lo, Math.min(hi, Math.round((ev.clientX - x0) / ppf)));
+                                setKfDrag({ clipId: c.id, frame: k.frame, dx });
+                              };
+                              const up = () => {
+                                el.removeEventListener("pointermove", mv);
+                                el.removeEventListener("pointerup", up);
+                                setKfDrag(null);
+                                if (!dx) return;
+                                const to = Math.round(k.frame + dx * speedOf(c) * (c.reversed ? -1 : 1));
+                                const keys = c.keyframes ?? [];
+                                if (keys.some((o) => o.frame === to)) { useUI.getState().toast("info", "There is already a keyframe on that frame."); return; }
+                                set({ playhead: at + dx });
+                                run(api.updateClip(c.id, { keyframes: keys.map((o) => (o.frame === k.frame ? { ...o, frame: to } : o)).sort((a, b) => a.frame - b.frame) }));
+                              };
+                              el.addEventListener("pointermove", mv);
+                              el.addEventListener("pointerup", up);
+                            }}
+                          />
+                        );
+                      })}
                       {isAudio && c && c.gain_db !== 0 && <span className="gain">{c.gain_db > 0 ? "+" : ""}{c.gain_db.toFixed(1)} dB</span>}
                       {c?.link_id && g.w > 40 && <span className="link" title="Linked picture and sound"><Link2 /></span>}
                       {!t.locked && tool !== "blade" && (
@@ -810,24 +860,23 @@ export function Timeline({ compact = false }: { compact?: boolean }) {
                       {drag?.moved && drag.item.id === it.id && drag.kind === "slip" && <div className="slip-note">slip {(-drag.dx * speedOf(c!)) > 0 ? "+" : ""}{Math.round(-drag.dx * speedOf(c!))} f</div>}
                     </div>
                     {tr && !drag?.moved && (() => {
-                      const lead = tr.kind === "cross_dissolve" ? Math.floor(tr.duration_frames / 2) : tr.duration_frames - Math.floor(tr.duration_frames / 2);
+                      const lead = overlaps(tr.kind) ? Math.floor(tr.duration_frames / 2) : tr.duration_frames - Math.floor(tr.duration_frames / 2);
                       const left = g.x - Math.floor(tr.duration_frames / 2) * ppf;
                       const w = Math.max(14, tr.duration_frames * ppf);
                       return (
                         <div
                           className={`transition-pill ${tr.kind}`}
                           style={{ left: Math.min(left, g.x - 7), width: w, top: y + h / 2 - 9 }}
-                          title={`${tr.kind === "cross_dissolve" ? "Cross dissolve" : "Dip to black"} · ${tr.duration_frames} frames (${lead} into this clip's head)`}
+                          title={`${TRANSITIONS[tr.kind]} · ${tr.duration_frames} frames (${lead} into this clip's head)`}
                           onPointerDown={(e) => { e.stopPropagation(); set({ selection: [c!.id] }); }}
                           onContextMenu={(e) => showContextMenu(e, [
-                            { text: "Cross dissolve", checked: tr.kind === "cross_dissolve", action: () => run(api.updateClip(c!.id, { transition_in: { ...tr, kind: "cross_dissolve" } })) },
-                            { text: "Dip to black", checked: tr.kind === "dip_to_black", action: () => run(api.updateClip(c!.id, { transition_in: { ...tr, kind: "dip_to_black" } })) },
+                            ...(Object.keys(TRANSITIONS) as TransitionKind[]).map((k) => ({ text: TRANSITIONS[k], checked: tr.kind === k, action: () => run(api.updateClip(c!.id, { transition_in: { ...tr, kind: k } })) })),
                             { text: "Duration", submenu: [halfSec, Math.round(fpsN), Math.round(fpsN * 2)].map((f) => ({ text: `${f} frames`, checked: tr.duration_frames === f, action: () => run(api.updateClip(c!.id, { transition_in: { ...tr, duration_frames: f } })) })) },
                             "sep",
                             { text: "Remove transition", action: () => run(api.updateClip(c!.id, { transition_in: null })) },
                           ])}
                         >
-                          {w > 54 && <span>{tr.kind === "cross_dissolve" ? "Dissolve" : "Dip"}</span>}
+                          {w > 54 && <span>{overlaps(tr.kind) ? TRANSITIONS[tr.kind].replace(/^(Cross|Edge) /, "") : "Dip"}</span>}
                         </div>
                       );
                     })()}

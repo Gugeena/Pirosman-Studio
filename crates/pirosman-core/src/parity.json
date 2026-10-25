@@ -40,7 +40,7 @@
       "module": "crates/pirosman-core/src/media.rs, render.rs, src/components/Inspector.tsx",
       "verification": "Integration test v3_photo_transform_vfx_and_still renders a photo clip frame-exact (60/60)",
       "status": "IMPLEMENTED AND TESTED",
-      "limitations": "No image sequences; no Ken Burns keyframes (transform is static per clip)."
+      "limitations": "No image sequences; Ken Burns moves use clip keyframes (linear only)."
     },
     {
       "id": "EDIT-01",
@@ -66,7 +66,7 @@
       "module": "src/components/Monitors.tsx, src/lib/audioEngine.ts, src/workspaces/EditWorkspace.tsx, src/components/Split.tsx",
       "verification": "Checked in the running app over CDP: fade opacity 0.524 at frame 10 of a 20-frame fade, transform/crop styles, vignette/grain overlays, float/dock, swap, splitters",
       "status": "PROTOTYPE",
-      "limitations": "Live preview shows one video layer; cross dissolves preview as a fade; reverse playback steps by seeking; effect previews are approximations. The floating viewer is an in-app window, not a separate OS window."
+      "limitations": "Live preview composites every video track; text is a CSS approximation; reverse playback steps by seeking; effect previews are approximations. The floating viewer is an in-app window, not a separate OS window."
     },
     {
       "id": "EDIT-03",
@@ -92,7 +92,7 @@
       "module": "crates/pirosman-core/src/model.rs, timeline.rs, render.rs",
       "verification": "Unit tests fades_and_transitions, cross_dissolve_extends_handles; integration v2_features_render_frame_exact (160/160 frames)",
       "status": "IMPLEMENTED AND TESTED",
-      "limitations": "Two transition types; no wipes or custom curves."
+      "limitations": "Six transition types (cross dissolve, edge wipe, slide, push, dip to black/white); one direction each, no custom curves."
     },
     {
       "id": "EDIT-05",
@@ -157,7 +157,7 @@
       "module": "crates/pirosman-core/src/model.rs, render.rs, src/components/Inspector.tsx",
       "verification": "Unit tests transform_crop_vfx_and_still, transform_fields_and_vfx_merge; integration v3_photo_transform_vfx_and_still",
       "status": "IMPLEMENTED AND TESTED",
-      "limitations": "Static per clip (no keyframes); no anchor point or flip."
+      "limitations": "Keyframes are linear (no ease curves) and set transform and opacity together; no anchor point or flip."
     },
     {
       "id": "FX-01",

@@ -1,12 +1,13 @@
 import { create } from "zustand";
-import type { Clip, MediaInfo, MediaRef, OfxCatalog, OfxPlugin, RenderPlan, RenderProgress, RenderResult, Track, View, VfxKind } from "./api";
+import type { Clip, MediaInfo, MediaRef, OfxCatalog, OfxPlugin, RenderPlan, RenderProgress, RenderResult, Track, Transform, TransitionKind, View, VfxKind } from "./api";
 
 /** What is being dragged with the pointer (HTML5 drag-and-drop is unavailable while the
  *  window accepts file drops from Explorer, so drags inside the app are pointer-driven). */
 export type DragPayload =
   | { kind: "media"; id: string; label: string; frames: number | null }
   | { kind: "ofx"; plugin: OfxPlugin; label: string }
-  | { kind: "vfx"; vfx: VfxKind; label: string };
+  | { kind: "vfx"; vfx: VfxKind; label: string }
+  | { kind: "transition"; transition: TransitionKind; label: string };
 export interface DragState { payload: DragPayload; x: number; y: number }
 import { timelineEnd } from "./clip";
 
@@ -35,6 +36,8 @@ interface UI {
   shuttle: number;
   page: Page;
   selection: string[];
+  /** Transform of the clip/title being dragged in the viewer, before it is committed. */
+  liveTransform: { id: string; tf: Transform } | null;
   playhead: number;
   playing: boolean;
   pxPerFrame: number;
@@ -92,6 +95,7 @@ export const useUI = create<UI>((set, get) => ({
   shuttle: 1,
   page: "edit",
   selection: [],
+  liveTransform: null,
   playhead: 0,
   playing: false,
   pxPerFrame: 4,

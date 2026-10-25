@@ -172,6 +172,32 @@ pub const EQ_DB_RANGE: (f64, f64) = (-18.0, 18.0);
 pub enum TransitionKind {
     CrossDissolve,
     DipToBlack,
+    DipToWhite,
+    /// Edge wipe, left to right.
+    Wipe,
+    /// The incoming clip slides in from the right over the outgoing one.
+    Slide,
+    /// The incoming clip pushes the outgoing one out to the left.
+    Push,
+}
+
+impl TransitionKind {
+    /// Blends the two clips across the cut (both play during it, so it needs
+    /// source handles); the other kinds dip through a colour instead.
+    pub fn overlaps(self) -> bool {
+        !matches!(self, TransitionKind::DipToBlack | TransitionKind::DipToWhite)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TransitionKind::CrossDissolve => "Cross dissolve",
+            TransitionKind::DipToBlack => "Dip to black",
+            TransitionKind::DipToWhite => "Dip to white",
+            TransitionKind::Wipe => "Edge wipe",
+            TransitionKind::Slide => "Slide",
+            TransitionKind::Push => "Push",
+        }
+    }
 }
 
 /// A transition across the cut where this clip begins: it blends from the
@@ -222,6 +248,13 @@ pub struct Clip {
     /// Source crop as fractions of each edge (v3).
     #[serde(default, skip_serializing_if = "Crop::is_none")]
     pub crop: Crop,
+    /// Layer opacity 0–1 over the tracks below (video only).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub opacity: f64,
+    /// Animated transform and opacity, sorted by frame; when present they
+    /// replace `transform` and `opacity` (video only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<Keyframe>,
     /// Effects stack applied after the grade, in order (v3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vfx: Vec<Vfx>,
@@ -254,6 +287,20 @@ pub struct OfxEffect {
 }
 
 pub const SPEED_RANGE: (f64, f64) = (0.25, 4.0);
+
+/// Most keyframes one clip may carry (each adds a step to the export's expressions).
+pub const MAX_KEYFRAMES: usize = 64;
+
+/// The layer's transform and opacity at `frame`, a *source* frame, so keyframes
+/// stay with the picture through trims, slips and splits. Values between
+/// keyframes are linear; before the first and after the last they hold.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Keyframe {
+    pub frame: i64,
+    pub transform: Transform,
+    #[serde(default = "one")]
+    pub opacity: f64,
+}
 
 /// Position is a fraction of the frame (0 = centred, ±1 = one frame width/height).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -357,6 +404,8 @@ impl Clip {
             lut: None,
             transform: Transform::default(),
             crop: Crop::default(),
+            opacity: 1.0,
+            keyframes: Vec::new(),
             vfx: vec![],
             ofx: vec![],
             extra: Map::new(),
@@ -412,8 +461,84 @@ pub struct TitleClip {
     pub fade_in_frames: i64,
     #[serde(default, skip_serializing_if = "is_zero_i")]
     pub fade_out_frames: i64,
+    /// Free placement: the text block's centre at `position_*`, uniform scale
+    /// (`scale_x`) and rotation. None keeps the `position` preset layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<Transform>,
+    #[serde(default, skip_serializing_if = "TextStyle::is_default")]
+    pub style: TextStyle,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+/// Fonts a title can use: (family, regular file, bold file) in the Windows fonts folder.
+pub const TITLE_FONTS: &[(&str, &str, &str)] = &[
+    ("Segoe UI", "segoeui.ttf", "segoeuib.ttf"),
+    ("Arial", "arial.ttf", "arialbd.ttf"),
+    ("Calibri", "calibri.ttf", "calibrib.ttf"),
+    ("Georgia", "georgia.ttf", "georgiab.ttf"),
+    ("Times New Roman", "times.ttf", "timesbd.ttf"),
+    ("Verdana", "verdana.ttf", "verdanab.ttf"),
+    ("Tahoma", "tahoma.ttf", "tahomabd.ttf"),
+    ("Trebuchet MS", "trebuc.ttf", "trebucbd.ttf"),
+    ("Consolas", "consola.ttf", "consolab.ttf"),
+    ("Courier New", "cour.ttf", "courbd.ttf"),
+    ("Impact", "impact.ttf", "impact.ttf"),
+];
+
+/// Typography of a title. The defaults reproduce the original title look.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextStyle {
+    /// A family from [`TITLE_FONTS`]; empty uses the default title font.
+    #[serde(default)]
+    pub font: String,
+    #[serde(default = "yes")]
+    pub bold: bool,
+    #[serde(default)]
+    pub align: TextAlign,
+    /// Gap between lines as a fraction of the font size.
+    #[serde(default = "line_gap")]
+    pub line_spacing: f64,
+    /// Outline width in pixels at the project resolution (0 = none).
+    #[serde(default)]
+    pub outline_px: u32,
+    #[serde(default = "black_hex")]
+    pub outline_hex: String,
+    #[serde(default = "yes")]
+    pub shadow: bool,
+    /// Box behind the text as `#RRGGBBAA`; None = no box.
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default = "one")]
+    pub opacity: f64,
+}
+
+fn line_gap() -> f64 {
+    0.2
+}
+fn black_hex() -> String {
+    "#000000".into()
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        Self { font: String::new(), bold: true, align: TextAlign::Left, line_spacing: 0.2, outline_px: 0, outline_hex: black_hex(), shadow: true, background: None, opacity: 1.0 }
+    }
+}
+
+impl TextStyle {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl TitleClip {
@@ -715,6 +840,21 @@ fn validate_clip_v2(c: &Clip, t: &Track, m: &MediaRef, media: &HashMap<Uuid, &Me
     }
     c.transform.validate()?;
     c.crop.validate()?;
+    if !c.opacity.is_finite() || !(0.0..=1.0).contains(&c.opacity) {
+        return Err(CoreError::Invalid(format!("clip {:?} opacity must be 0–1", c.name)));
+    }
+    if c.keyframes.len() > MAX_KEYFRAMES {
+        return Err(CoreError::Invalid(format!("clip {:?} has more than {MAX_KEYFRAMES} keyframes", c.name)));
+    }
+    for (i, k) in c.keyframes.iter().enumerate() {
+        k.transform.validate()?;
+        if !k.opacity.is_finite() || !(0.0..=1.0).contains(&k.opacity) {
+            return Err(CoreError::Invalid(format!("clip {:?} keyframe opacity must be 0–1", c.name)));
+        }
+        if i > 0 && c.keyframes[i - 1].frame >= k.frame {
+            return Err(CoreError::Invalid(format!("clip {:?} keyframes must be in frame order, one per frame", c.name)));
+        }
+    }
     for fx in &c.vfx {
         if !fx.amount.is_finite() || !(0.0..=1.0).contains(&fx.amount) {
             return Err(CoreError::Invalid(format!("clip {:?}: effect amount must be 0–1", c.name)));
@@ -740,8 +880,8 @@ fn validate_clip_v2(c: &Clip, t: &Track, m: &MediaRef, media: &HashMap<Uuid, &Me
             }
         }
     }
-    if (!c.transform.is_identity() || !c.crop.is_none() || !c.vfx.is_empty() || !c.ofx.is_empty()) && t.kind != TrackKind::Video {
-        return Err(CoreError::Invalid("transform, crop and effects apply to video clips only".into()));
+    if (!c.transform.is_identity() || !c.crop.is_none() || c.opacity != 1.0 || !c.keyframes.is_empty() || !c.vfx.is_empty() || !c.ofx.is_empty()) && t.kind != TrackKind::Video {
+        return Err(CoreError::Invalid("transform, crop, opacity and effects apply to video clips only".into()));
     }
     if let Some(lut) = &c.lut {
         if !lut.to_lowercase().ends_with(".cube") || lut.len() > 4096 {
@@ -765,14 +905,15 @@ fn validate_clip_v2(c: &Clip, t: &Track, m: &MediaRef, media: &HashMap<Uuid, &Me
                 d
             )));
         }
-        if tr.kind == TransitionKind::CrossDissolve {
+        if tr.kind.overlaps() {
             let (lead, tail) = dissolve_halves(tr.duration_frames);
+            let name = tr.kind.label();
             if c.speed != 1.0 || prev.speed != 1.0 || c.reversed || prev.reversed {
-                return Err(CoreError::Invalid("cross dissolves need both clips at 1x and not reversed; use Dip to Black".into()));
+                return Err(CoreError::Invalid(format!("{name} needs both clips at 1x and not reversed; use a dip")));
             }
             if c.source_in < lead {
                 return Err(CoreError::Invalid(format!(
-                    "cross dissolve needs {lead} frames of handle before {:?} (it has {})",
+                    "{name} needs {lead} frames of handle before {:?} (it has {})",
                     c.name, c.source_in
                 )));
             }
@@ -781,7 +922,7 @@ fn validate_clip_v2(c: &Clip, t: &Track, m: &MediaRef, media: &HashMap<Uuid, &Me
             if let Some(a) = avail {
                 if a < tail {
                     return Err(CoreError::Invalid(format!(
-                        "cross dissolve needs {tail} frames of handle after {:?} (it has {a})",
+                        "{name} needs {tail} frames of handle after {:?} (it has {a})",
                         prev.name
                     )));
                 }
@@ -829,6 +970,30 @@ fn validate_title(t: &TitleClip, height: u32) -> CoreResult<()> {
     }
     if t.fade_in_frames < 0 || t.fade_out_frames < 0 || t.fade_in_frames + t.fade_out_frames > t.duration {
         return Err(CoreError::Invalid("title fades do not fit its duration".into()));
+    }
+    if let Some(tf) = &t.transform {
+        tf.validate()?;
+        if tf.scale_x != tf.scale_y {
+            return Err(CoreError::Invalid("title scale must be uniform".into()));
+        }
+    }
+    let s = &t.style;
+    if !s.font.is_empty() && !TITLE_FONTS.iter().any(|f| f.0 == s.font) {
+        return Err(CoreError::Invalid(format!("title font {:?} is not available", s.font)));
+    }
+    if !s.line_spacing.is_finite() || !(0.0..=3.0).contains(&s.line_spacing) {
+        return Err(CoreError::Invalid("title line spacing must be 0–3".into()));
+    }
+    if s.outline_px > height.max(16) / 10 || !valid_hex_color(&s.outline_hex) {
+        return Err(CoreError::Invalid("title outline must be a #RRGGBB color up to a tenth of the frame height".into()));
+    }
+    if let Some(b) = &s.background {
+        if b.len() != 9 || !valid_hex_color(&b[..7]) || !b[7..].chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(CoreError::Invalid(format!("title background {b:?} must be #RRGGBBAA")));
+        }
+    }
+    if !s.opacity.is_finite() || !(0.0..=1.0).contains(&s.opacity) {
+        return Err(CoreError::Invalid("title opacity must be 0–1".into()));
     }
     Ok(())
 }
@@ -979,6 +1144,25 @@ mod tests {
     }
 
     #[test]
+    fn layer_and_text_fields_stay_out_of_old_files() {
+        let (_, mid) = project();
+        let c = Clip::new(mid, "x", 0, 0, 10);
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v.get("opacity").is_none() && v.get("keyframes").is_none());
+        let old = serde_json::json!({ "id": Uuid::new_v4(), "start": 0, "duration": 10, "text": "Hi", "font_size": 64, "color_hex": "#ffffff", "position": "center" });
+        let t: TitleClip = serde_json::from_value(old.clone()).unwrap();
+        assert!(t.transform.is_none() && t.style.is_default());
+        assert_eq!(serde_json::to_value(&t).unwrap(), old, "an unedited title saves exactly as before");
+        let styled = TitleClip {
+            transform: Some(Transform { position_x: 0.25, rotation_deg: -10.0, ..Default::default() }),
+            style: TextStyle { font: "Georgia".into(), bold: false, align: TextAlign::Right, outline_px: 3, background: Some("#11223380".into()), opacity: 0.7, ..Default::default() },
+            ..t
+        };
+        let back: TitleClip = serde_json::from_value(serde_json::to_value(&styled).unwrap()).unwrap();
+        assert_eq!(back, styled);
+    }
+
+    #[test]
     fn speed_changes_timeline_duration() {
         let (_, mid) = project();
         let mut c = Clip::new(mid, "c", 10, 0, 100);
@@ -1028,6 +1212,8 @@ mod tests {
             position: TitlePosition::Center,
             fade_in_frames: 0,
             fade_out_frames: 0,
+            transform: None,
+            style: TextStyle::default(),
             extra: Map::new(),
         });
         assert!(p.validate().is_err(), "titles not allowed on audio tracks");

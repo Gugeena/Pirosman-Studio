@@ -143,14 +143,19 @@ fn track_json(p: &Project, t: &Track) -> Value {
         match it {
             Item::C(c) => {
                 if let Some(trn) = c.transition_in {
-                    let (lead, tail) = match trn.kind {
-                        TransitionKind::CrossDissolve => dissolve_halves(trn.duration_frames),
-                        TransitionKind::DipToBlack => (trn.duration_frames - trn.duration_frames / 2, trn.duration_frames / 2),
+                    let (lead, tail) = if trn.kind.overlaps() {
+                        dissolve_halves(trn.duration_frames)
+                    } else {
+                        (trn.duration_frames - trn.duration_frames / 2, trn.duration_frames / 2)
                     };
                     // OTIO: in_offset reaches back into the outgoing clip, out_offset into the incoming one.
                     let (ttype, kind) = match trn.kind {
                         TransitionKind::CrossDissolve => ("SMPTE_Dissolve", "cross_dissolve"),
                         TransitionKind::DipToBlack => ("Custom_Transition", "dip_to_black"),
+                        TransitionKind::DipToWhite => ("Custom_Transition", "dip_to_white"),
+                        TransitionKind::Wipe => ("Custom_Transition", "wipe"),
+                        TransitionKind::Slide => ("Custom_Transition", "slide"),
+                        TransitionKind::Push => ("Custom_Transition", "push"),
                     };
                     children.push(json!({
                         "OTIO_SCHEMA": "Transition.1",

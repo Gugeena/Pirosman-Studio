@@ -16,7 +16,7 @@ export interface MediaRef {
   video_codec: string | null; audio_codec: string | null; sample_rate: number | null; channels: number | null; container: string | null;
 }
 
-export type TransitionKind = "cross_dissolve" | "dip_to_black";
+export type TransitionKind = "cross_dissolve" | "dip_to_black" | "dip_to_white" | "wipe" | "slide" | "push";
 export interface Transition { kind: TransitionKind; duration_frames: number }
 
 // v2 fields are omitted from JSON at their default values, hence optional.
@@ -25,8 +25,11 @@ export interface Clip {
   gain_db: number; color: ColorParams; link_id: Uuid | null;
   fade_in_frames?: number; fade_out_frames?: number; transition_in?: Transition | null;
   speed?: number; reversed?: boolean; lut?: string | null;
-  transform?: Transform; crop?: Crop; vfx?: Vfx[]; ofx?: OfxEffect[];
+  transform?: Transform; crop?: Crop; opacity?: number; keyframes?: Keyframe[]; vfx?: Vfx[]; ofx?: OfxEffect[];
 }
+
+/** Transform and opacity at a *source* frame; when a clip has any, they replace its static values. */
+export interface Keyframe { frame: number; transform: Transform; opacity: number }
 
 /** A third-party OpenFX effect on a clip. Params left out use the plugin default. */
 export type OfxValue = number | boolean | string | number[];
@@ -53,9 +56,20 @@ export type VfxKind = "gaussian_blur" | "glow" | "vignette" | "film_grain" | "ch
 export interface Vfx { id: Uuid; kind: VfxKind; amount: number; enabled: boolean }
 
 export type TitlePosition = "top" | "center" | "bottom" | "lower_third";
+export type TextAlign = "left" | "center" | "right";
+/** Title typography; omitted from JSON when every field is at its default. */
+export interface TextStyle {
+  font: string; bold: boolean; align: TextAlign; line_spacing: number; outline_px: number; outline_hex: string;
+  shadow: boolean; background: string | null; opacity: number;
+}
+export const DEFAULT_TEXT_STYLE: TextStyle = { font: "", bold: true, align: "left", line_spacing: 0.2, outline_px: 0, outline_hex: "#000000", shadow: true, background: null, opacity: 1 };
+/** Mirrors `TITLE_FONTS` in pirosman-core (families whose files the renderer resolves). */
+export const TITLE_FONTS = ["Segoe UI", "Arial", "Calibri", "Georgia", "Times New Roman", "Verdana", "Tahoma", "Trebuchet MS", "Consolas", "Courier New", "Impact"];
 export interface TitleClip {
   id: Uuid; start: number; duration: number; text: string; font_size: number; color_hex: string; position: TitlePosition;
   fade_in_frames?: number; fade_out_frames?: number;
+  /** Free placement (centre of the text block); absent = `position` preset layout. */
+  transform?: Transform | null; style?: TextStyle;
 }
 
 export interface Track {
@@ -75,7 +89,7 @@ export interface Project {
 export interface ClipPatch {
   name?: string; gain_db?: number; color?: ColorParams; fade_in_frames?: number; fade_out_frames?: number;
   speed?: number; reversed?: boolean; transition_in?: Transition | null; lut?: string | null;
-  transform?: Transform; crop?: Crop; vfx?: Vfx[]; ofx?: OfxEffect[];
+  transform?: Transform; crop?: Crop; opacity?: number; keyframes?: Keyframe[]; vfx?: Vfx[]; ofx?: OfxEffect[];
 }
 export interface TrackPatch {
   name?: string; muted?: boolean; locked?: boolean; solo?: boolean; volume_db?: number; pan?: number;
@@ -84,6 +98,7 @@ export interface TrackPatch {
 export interface TitlePatch {
   text?: string; font_size?: number; color_hex?: string; position?: TitlePosition; duration?: number;
   fade_in_frames?: number; fade_out_frames?: number;
+  style?: TextStyle; /** null returns the title to its `position` preset. */ transform?: Transform | null;
 }
 export interface Scopes { cols: number; levels: number; luma: number[]; red: number[]; green: number[]; blue: number[]; clipped_low: number; clipped_high: number }
 

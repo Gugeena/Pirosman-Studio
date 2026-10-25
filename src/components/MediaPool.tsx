@@ -15,6 +15,14 @@ type Kind = "all" | "video" | "audio" | "image";
 const codecOf = (m: MediaRef) => (m.has_video ? m.video_codec : m.audio_codec) ?? "";
 const fpsOf = (m: MediaRef) => (m.frame_rate ? m.frame_rate.num / m.frame_rate.den : 0);
 
+/** The whole picture, letterboxed (never stretched or cropped); stills show transparency on a checkerboard. */
+const thumbStyle = (thumb: string, still: boolean): React.CSSProperties => ({
+  backgroundImage: still ? `${cssUrl(thumb)}, repeating-conic-gradient(#2b2e33 0 25%, #1b1d21 0 50%)` : cssUrl(thumb),
+  backgroundSize: still ? "contain, 12px 12px" : "contain",
+  backgroundRepeat: still ? "no-repeat, repeat" : "no-repeat",
+  backgroundPosition: "center",
+});
+
 export function MediaPool({ title = "Media Pool", switcher }: { title?: string; switcher?: React.ReactNode }) {
   const view = useUI((s) => s.view);
   const sel = useUI((s) => s.sourceMediaId);
@@ -137,8 +145,9 @@ export function MediaPool({ title = "Media Pool", switcher }: { title?: string; 
                   key={m.id} className="pool-cell" role="option" aria-selected={sel === m.id} {...dragProps(m)}
                   onClick={() => choose(m)} onDoubleClick={() => missing && relinkFlow(m.id)} onContextMenu={(e) => menu(e, m)} title={`${m.name}\n${m.path}`}
                 >
-                  <div className="pool-thumb" style={info?.thumb ? { backgroundImage: cssUrl(info.thumb) } : undefined}>
+                  <div className="pool-thumb" style={info?.thumb ? thumbStyle(info.thumb, m.kind === "image") : undefined}>
                     {m.kind === "audio" && info?.wave && <div className="wave" style={{ backgroundImage: cssUrl(info.wave) }} />}
+                    {!info?.thumb && m.kind !== "audio" && <Icon className="no-thumb" />}
                     <span className="kind"><Icon /></span>
                     {m.duration_frames != null && <span className="dur">{shortDuration(m.duration_frames, rate)}</span>}
                     {missing && <div className="flag"><Link2Off size={16} />Offline</div>}

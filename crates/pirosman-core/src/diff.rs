@@ -225,6 +225,8 @@ fn diff_titles(a: &Project, b: &Project, out: &mut Vec<Change>) {
                         ("position", serde_json::to_value(ox.position).unwrap(), serde_json::to_value(x.position).unwrap()),
                         ("fade_in_frames", ox.fade_in_frames.into(), x.fade_in_frames.into()),
                         ("fade_out_frames", ox.fade_out_frames.into(), x.fade_out_frames.into()),
+                        ("transform", serde_json::to_value(ox.transform).unwrap(), serde_json::to_value(x.transform).unwrap()),
+                        ("style", serde_json::to_value(&ox.style).unwrap(), serde_json::to_value(&x.style).unwrap()),
                     ] {
                         if before != after {
                             out.push(Change::TitleModified { title_id: x.id, label: x.label(), field: f.into(), before, after });
@@ -352,12 +354,17 @@ fn diff_clip(ot: &Track, oc: &Clip, t: &Track, c: &Clip, out: &mut Vec<Change>) 
             ("crop_right", k.right),
             ("crop_top", k.top),
             ("crop_bottom", k.bottom),
+            ("opacity", c.opacity),
         ]
     };
     for ((field, x), (_, y)) in tf(oc).into_iter().zip(tf(c)) {
         if x != y {
             out.push(Change::ClipTransformModified { clip_id: c.id, name: c.name.clone(), track: t.name.clone(), field: field.into(), before: x, after: y });
         }
+    }
+    if oc.keyframes != c.keyframes {
+        let n = |c: &Clip| c.keyframes.len() as f64;
+        out.push(Change::ClipTransformModified { clip_id: c.id, name: c.name.clone(), track: t.name.clone(), field: "keyframes".into(), before: n(oc), after: n(c) });
     }
     diff_vfx(oc, c, &t.name, out);
     diff_ofx(oc, c, &t.name, out);
@@ -451,10 +458,7 @@ fn diff_ofx(oc: &Clip, c: &Clip, track: &str, out: &mut Vec<Change>) {
 }
 
 fn transition_name(k: TransitionKind) -> &'static str {
-    match k {
-        TransitionKind::CrossDissolve => "Cross dissolve",
-        TransitionKind::DipToBlack => "Dip to black",
-    }
+    k.label()
 }
 
 fn file_name(p: &str) -> String {

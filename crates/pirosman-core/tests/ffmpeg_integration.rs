@@ -241,6 +241,179 @@ fn v3_photo_transform_vfx_and_still() {
     assert_eq!(probe["streams"][0]["width"], 640);
 }
 
+/// Layers: a transparent PNG shows the track below through its clear half,
+/// opacity mixes layers, and a free-placed title box lands where placed.
+#[test]
+fn v4_transparent_overlay_opacity_and_styled_title() {
+    use pirosman_core::model::{TextStyle, Transform};
+    let Some(t) = tools_or_skip("v4_transparent_overlay_opacity_and_styled_title") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let ff = |args: &[&str], out: &Path| assert!(command(&t.ffmpeg).args(["-v", "error", "-y"]).args(args).arg(out).status().unwrap().success());
+    let red = dir.path().join("red.mp4");
+    ff(&["-f", "lavfi", "-i", "color=c=red:s=640x360:r=25:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p"], &red);
+    let png = dir.path().join("half.png");
+    ff(&["-f", "lavfi", "-i", "color=c=black@0.0:s=320x360,format=rgba", "-f", "lavfi", "-i", "color=c=blue:s=320x360,format=rgba", "-filter_complex", "[0][1]hstack,format=rgba", "-frames:v", "1"], &png);
+    let settings = ProjectSettings { width: 640, height: 360, frame_rate: Rational::new(25, 1), ..Default::default() };
+    let mut p = Project::new("Layers", settings);
+    let (m, o) = (import_media(&t, &red, p.settings.frame_rate).unwrap(), import_media(&t, &png, p.settings.frame_rate).unwrap());
+    let (mid, oid) = (m.id, o.id);
+    p.media.extend([m, o]);
+    let (v1, v2) = (p.tracks[0].id, p.tracks[1].id);
+    place_clip(&mut p, PlaceClip { media_id: mid, track_id: v1, start: 0, source_in: Some(0), source_out: Some(50) }).unwrap();
+    let ov = place_clip(&mut p, PlaceClip { media_id: oid, track_id: v2, start: 0, source_in: Some(0), source_out: Some(50) }).unwrap()[0];
+    let pixel = |p: &Project, x: u32, y: u32| -> [u8; 3] {
+        let still = dir.path().join("frame.png");
+        let _ = std::fs::remove_file(&still);
+        let mut s = RenderSettings::from_project(p, still.to_str().unwrap());
+        (s.video_codec, s.audio_codec, s.range_in, s.range_out) = (VideoCodec::Png, AudioCodec::None, Some(10), Some(11));
+        execute(&t, &build_plan(p, &s, true).unwrap(), false, Arc::new(AtomicBool::new(false)), |_| {}).unwrap();
+        let out = command(&t.ffmpeg).args(["-v", "error", "-i"]).arg(&still).args(["-vf", &format!("crop=1:1:{x}:{y},format=rgb24"), "-f", "rawvideo", "-"]).output().unwrap();
+        [out.stdout[0], out.stdout[1], out.stdout[2]]
+    };
+    let near = |c: [u8; 3], want: [i32; 3]| c.iter().zip(want).all(|(&a, b)| (a as i32 - b).abs() <= 40);
+    let (clear, solid) = (pixel(&p, 80, 180), pixel(&p, 560, 180));
+    assert!(near(clear, [255, 0, 0]), "the transparent half shows the red track below: {clear:?}");
+    assert!(near(solid, [0, 0, 255]), "the opaque half is blue: {solid:?}");
+    update_clip(&mut p, ov, ClipPatch { opacity: Some(0.5), ..Default::default() }).unwrap();
+    let mixed = pixel(&p, 560, 180);
+    assert!(near(mixed, [128, 0, 128]), "50% blue over red: {mixed:?}");
+    // V2 is busy, so the title gets a new V3 above it.
+    let x = add_title(&mut p, NewTitle { track_id: v2, start: 0, duration: 50, text: "MMMM".into(), font_size: Some(60), color_hex: Some("#00ff00".into()), position: None }).unwrap();
+    assert_eq!(p.tracks.iter().filter(|t| t.titles.iter().any(|y| y.id == x)).map(|t| t.name.as_str()).collect::<Vec<_>>(), ["V3"]);
+    let style = TextStyle { background: Some("#00ff00ff".into()), shadow: false, ..Default::default() };
+    update_title(&mut p, x, TitlePatch { style: Some(style), transform: Some(Some(Transform { position_x: -0.25, ..Default::default() })), ..Default::default() }).unwrap();
+    let boxed = pixel(&p, 160, 180);
+    assert!(near(boxed, [0, 255, 0]), "the green title box sits a quarter frame left of centre: {boxed:?}");
+}
+
+#[test]
+fn v5_wipe_slide_push_and_dip_to_white() {
+    use pirosman_core::model::{Transition, TransitionKind};
+    let Some(t) = tools_or_skip("v5_wipe_slide_push_and_dip_to_white") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let ff = |args: &[&str], out: &Path| assert!(command(&t.ffmpeg).args(["-v", "error", "-y"]).args(args).arg(out).status().unwrap().success());
+    // Outgoing: red left half, green right half, so a push (which moves it) differs from a slide (which does not).
+    let (rg, blue) = (dir.path().join("rg.mp4"), dir.path().join("blue.mp4"));
+    ff(&["-f", "lavfi", "-i", "color=c=red:s=320x360:r=25:d=4", "-f", "lavfi", "-i", "color=c=lime:s=320x360:r=25:d=4", "-filter_complex", "[0][1]hstack", "-c:v", "libx264", "-pix_fmt", "yuv420p"], &rg);
+    ff(&["-f", "lavfi", "-i", "color=c=blue:s=640x360:r=25:d=4", "-c:v", "libx264", "-pix_fmt", "yuv420p"], &blue);
+    let settings = ProjectSettings { width: 640, height: 360, frame_rate: Rational::new(25, 1), ..Default::default() };
+    let mut p = Project::new("Transitions", settings);
+    let (a, b) = (import_media(&t, &rg, p.settings.frame_rate).unwrap(), import_media(&t, &blue, p.settings.frame_rate).unwrap());
+    let (aid, bid) = (a.id, b.id);
+    p.media.extend([a, b]);
+    let v1 = p.tracks[0].id;
+    place_clip(&mut p, PlaceClip { media_id: aid, track_id: v1, start: 0, source_in: Some(0), source_out: Some(50) }).unwrap();
+    let inc = place_clip(&mut p, PlaceClip { media_id: bid, track_id: v1, start: 50, source_in: Some(25), source_out: Some(75) }).unwrap()[0];
+    let pixel = |p: &Project, f: i64, x: u32| -> [u8; 3] {
+        let still = dir.path().join("frame.png");
+        let _ = std::fs::remove_file(&still);
+        let mut s = RenderSettings::from_project(p, still.to_str().unwrap());
+        (s.video_codec, s.audio_codec, s.range_in, s.range_out) = (VideoCodec::Png, AudioCodec::None, Some(f), Some(f + 1));
+        execute(&t, &build_plan(p, &s, true).unwrap(), false, Arc::new(AtomicBool::new(false)), |_| {}).unwrap();
+        let out = command(&t.ffmpeg).args(["-v", "error", "-i"]).arg(&still).args(["-vf", &format!("crop=1:1:{x}:180,format=rgb24"), "-f", "rawvideo", "-"]).output().unwrap();
+        [out.stdout[0], out.stdout[1], out.stdout[2]]
+    };
+    let near = |c: [u8; 3], want: [i32; 3]| c.iter().zip(want).all(|(&a, b)| (a as i32 - b).abs() <= 40);
+    let set = |p: &mut Project, kind| update_clip(p, inc, ClipPatch { transition_in: Some(Some(Transition { kind, duration_frames: 10 })), ..Default::default() }).unwrap();
+    // A 10-frame transition spans frames 45..55; at frame 50 it is a little past halfway (6/11).
+    set(&mut p, TransitionKind::Wipe);
+    let (l, r) = (pixel(&p, 50, 100), pixel(&p, 50, 560));
+    assert!(near(l, [0, 0, 255]) && near(r, [0, 255, 0]), "wipe: blue has covered the left half only: {l:?} {r:?}");
+    set(&mut p, TransitionKind::Slide);
+    let (l, r) = (pixel(&p, 50, 100), pixel(&p, 50, 560));
+    assert!(near(l, [255, 0, 0]) && near(r, [0, 0, 255]), "slide: the outgoing clip stays put under the incoming one: {l:?} {r:?}");
+    set(&mut p, TransitionKind::Push);
+    let (l, r) = (pixel(&p, 50, 100), pixel(&p, 50, 560));
+    assert!(near(l, [0, 255, 0]) && near(r, [0, 0, 255]), "push: the outgoing clip has moved half a frame left: {l:?} {r:?}");
+    set(&mut p, TransitionKind::DipToWhite);
+    let w = pixel(&p, 49, 320);
+    assert!(w.iter().all(|&c| c > 200), "dip to white is white at the cut: {w:?}");
+}
+
+#[test]
+fn v6_keyframed_position_rotation_and_opacity() {
+    use pirosman_core::model::{Keyframe, Transform};
+    let Some(t) = tools_or_skip("v6_keyframed_position_rotation_and_opacity") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let ff = |args: &[&str], out: &Path| assert!(command(&t.ffmpeg).args(["-v", "error", "-y"]).args(args).arg(out).status().unwrap().success());
+    let (red, sq) = (dir.path().join("red.mp4"), dir.path().join("square.png"));
+    ff(&["-f", "lavfi", "-i", "color=c=red:s=640x360:r=25:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p"], &red);
+    ff(&["-f", "lavfi", "-i", "color=c=blue:s=100x100", "-frames:v", "1"], &sq);
+    let settings = ProjectSettings { width: 640, height: 360, frame_rate: Rational::new(25, 1), ..Default::default() };
+    let mut p = Project::new("Keys", settings);
+    let (a, b) = (import_media(&t, &red, p.settings.frame_rate).unwrap(), import_media(&t, &sq, p.settings.frame_rate).unwrap());
+    let (aid, bid) = (a.id, b.id);
+    p.media.extend([a, b]);
+    let (v1, v2) = (p.tracks[0].id, p.tracks[1].id);
+    place_clip(&mut p, PlaceClip { media_id: aid, track_id: v1, start: 0, source_in: Some(0), source_out: Some(50) }).unwrap();
+    let ov = place_clip(&mut p, PlaceClip { media_id: bid, track_id: v2, start: 0, source_in: Some(0), source_out: Some(50) }).unwrap()[0];
+    let pixel = |p: &Project, f: i64, x: u32, y: u32| -> [u8; 3] {
+        let still = dir.path().join("frame.png");
+        let _ = std::fs::remove_file(&still);
+        let mut s = RenderSettings::from_project(p, still.to_str().unwrap());
+        (s.video_codec, s.audio_codec, s.range_in, s.range_out) = (VideoCodec::Png, AudioCodec::None, Some(f), Some(f + 1));
+        execute(&t, &build_plan(p, &s, true).unwrap(), false, Arc::new(AtomicBool::new(false)), |_| {}).unwrap();
+        let out = command(&t.ffmpeg).args(["-v", "error", "-i"]).arg(&still).args(["-vf", &format!("crop=1:1:{x}:{y},format=rgb24"), "-f", "rawvideo", "-"]).output().unwrap();
+        [out.stdout[0], out.stdout[1], out.stdout[2]]
+    };
+    let near = |c: [u8; 3], want: [i32; 3], tol: i32| c.iter().zip(want).all(|(&a, b)| (a as i32 - b).abs() <= tol);
+    // The square fits to 360 px; at scale 0.25 it is 90 px. It travels from x=160 to x=480,
+    // fading to 50% and turning 45° by frame 40, then holds.
+    let small = |px: f64, rot: f64| Transform { scale_x: 0.25, scale_y: 0.25, position_x: px, rotation_deg: rot, ..Default::default() };
+    let keys = vec![Keyframe { frame: 0, transform: small(-0.25, 0.0), opacity: 1.0 }, Keyframe { frame: 40, transform: small(0.25, 45.0), opacity: 0.5 }];
+    update_clip(&mut p, ov, ClipPatch { keyframes: Some(keys), ..Default::default() }).unwrap();
+    let (a, b) = (pixel(&p, 0, 160, 180), pixel(&p, 0, 480, 180));
+    assert!(near(a, [0, 0, 255], 40) && near(b, [255, 0, 0], 40), "frame 0: square on the left: {a:?} {b:?}");
+    let (m, l) = (pixel(&p, 20, 320, 180), pixel(&p, 20, 160, 180));
+    assert!(near(m, [64, 0, 191], 40) && near(l, [255, 0, 0], 40), "frame 20: centred at 75%: {m:?} {l:?}");
+    let (c, corner, tip) = (pixel(&p, 45, 480, 180), pixel(&p, 45, 520, 140), pixel(&p, 45, 480, 125));
+    assert!(near(c, [128, 0, 128], 40), "held at 50% on the right: {c:?}");
+    assert!(near(corner, [255, 0, 0], 40) && near(tip, [128, 0, 128], 40), "turned 45°: the square's corner is gone, the diamond's tip is there: {corner:?} {tip:?}");
+    // Frame-exact: opacity 0 at frame 0 and 1 at frame 2 is half way at frame 1.
+    let keys = vec![Keyframe { frame: 0, transform: small(0.0, 0.0), opacity: 0.0 }, Keyframe { frame: 2, transform: small(0.0, 0.0), opacity: 1.0 }];
+    update_clip(&mut p, ov, ClipPatch { keyframes: Some(keys), ..Default::default() }).unwrap();
+    let h = pixel(&p, 1, 320, 180);
+    assert!(near(h, [128, 0, 128], 20), "frame 1 is exactly between the keys: {h:?}");
+}
+
+#[test]
+fn image_thumbnails_keep_shape_and_alpha() {
+    let Some(t) = tools_or_skip("image_thumbnails_keep_shape_and_alpha") else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let ff = |args: &[&str], out: &Path| assert!(command(&t.ffmpeg).args(["-v", "error", "-y"]).args(args).arg(out).status().unwrap().success());
+    let probe = |p: &Path| -> String {
+        let o = command(&t.ffprobe).args(["-v", "error", "-show_entries", "stream=width,height,pix_fmt", "-of", "csv=p=0"]).arg(p).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    // (file, source size, thumbnail size): 320 wide, height from the aspect ratio.
+    let cases = [
+        ("land.png", "800x600", "320,240"),
+        ("portrait photo.jpg", "600x900", "320,480"),
+        ("square.webp", "500x500", "320,320"),
+        ("it's a ünïcode [copy].jpeg", "1000x250", "320,80"),
+    ];
+    for (name, size, want) in cases {
+        let src = dir.path().join(name);
+        ff(&["-f", "lavfi", "-i", &format!("testsrc2=s={size}"), "-frames:v", "1"], &src);
+        let m = import_media(&t, &src, Rational::new(25, 1)).unwrap();
+        assert_eq!(m.kind, pirosman_core::model::MediaKind::Image, "{name}");
+        let thumb = dir.path().join(format!("{name}.thumb.png"));
+        make_thumbnail(&t, &src, 0.0, &thumb).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(probe(&thumb).starts_with(want), "{name}: {}", probe(&thumb));
+    }
+    // Transparency survives into a PNG thumbnail.
+    let clear = dir.path().join("clear.png");
+    ff(&["-f", "lavfi", "-i", "color=c=blue@0.5:s=400x300,format=rgba", "-frames:v", "1"], &clear);
+    let thumb = dir.path().join("clear.thumb.png");
+    make_thumbnail(&t, &clear, 0.0, &thumb).unwrap();
+    assert!(probe(&thumb).contains("rgba"), "{}", probe(&thumb));
+    // A file that is not a picture fails with an error instead of an empty thumbnail.
+    let bad = dir.path().join("broken.png");
+    std::fs::write(&bad, b"not an image").unwrap();
+    assert!(make_thumbnail(&t, &bad, 0.0, &dir.path().join("broken.thumb.png")).is_err());
+    assert!(import_media(&t, &bad, Rational::new(25, 1)).is_err());
+}
+
 /// MEDIA-02: a missing file is detected; relinking to different content is
 /// refused; relinking to the moved original (same SHA-256) succeeds.
 #[test]

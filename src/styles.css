@@ -203,6 +203,7 @@ input, textarea { user-select: text; caret-color: var(--marker); }
   position: relative; aspect-ratio: 16 / 10; background: var(--ink-3); border-radius: 2px; overflow: hidden;
   outline: 1px solid var(--ink-4); background-size: cover; background-position: center;
 }
+.pool-thumb .no-thumb { position: absolute; left: calc(50% - 14px); top: calc(50% - 14px); width: 28px; height: 28px; color: var(--bone-3); opacity: .45; }
 .pool-thumb .kind { position: absolute; left: 5px; top: 5px; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 2px; background: rgba(0,0,0,.72); color: var(--bone-2); }
 .pool-thumb .kind svg { width: 12px; height: 12px; }
 .pool-thumb .dur { position: absolute; right: 4px; bottom: 4px; padding: 1px 4px; font: 10.5px var(--mono); background: rgba(0,0,0,.78); color: var(--bone); border-radius: 2px; }
@@ -317,6 +318,10 @@ input, textarea { user-select: text; caret-color: var(--marker); }
 .clip .cname { position: relative; z-index: 2; padding: 3px 6px 0; font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
 .clip .cthumbs { position: absolute; inset: 0; background-repeat: repeat-x; background-size: auto 100%; opacity: .32; }
 .clip .cwave { position: absolute; left: 0; right: 0; top: 14px; bottom: 2px; background-repeat: no-repeat; opacity: .9; }
+/* Keyframe markers: a diamond at each keyframe's frame along the bottom of the clip. */
+.clip .kf-mark { position: absolute; bottom: 3px; width: 9px; height: 9px; margin-left: -4.5px; z-index: 4; transform: rotate(45deg); background: var(--bone, #f2efe9); border: 1px solid rgba(0,0,0,.75); cursor: ew-resize; }
+.clip .kf-mark:hover { background: #fff; }
+.clip .kf-mark.on { background: var(--amber, #e8a33d); }
 .clip .handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 3; }
 .clip .handle.l { left: 0; }
 .clip .handle.r { right: 0; }
@@ -444,6 +449,7 @@ pre.cmd { margin: 0; padding: 10px 12px; background: var(--ink-0); border: 1px s
   font: 700 9.5px var(--sans); letter-spacing: .06em; text-transform: uppercase; color: var(--marker-ink); cursor: pointer;
 }
 .transition-pill.dip_to_black { background: linear-gradient(90deg, rgba(59,110,168,.2), #000 50%, rgba(59,110,168,.2)); color: var(--bone); }
+.transition-pill.dip_to_white { background: linear-gradient(90deg, rgba(59,110,168,.2), #fff 50%, rgba(59,110,168,.2)); color: #000; }
 .transition-pill:hover { border-color: var(--bone); }
 .range-band { position: absolute; top: 0; bottom: 0; background: rgba(244,196,48,.16); z-index: 1; pointer-events: none; }
 .range-band .bracket { position: absolute; top: 0; bottom: 0; width: 6px; border: 2px solid var(--marker); }
@@ -457,9 +463,14 @@ pre.cmd { margin: 0; padding: 10px 12px; background: var(--ink-0); border: 1px s
 
 /* ------------------------------------------------------------ mixer */
 .mixer { display: flex; gap: 1px; background: var(--ink-4); overflow-x: auto; }
-.strip { width: 96px; flex: none; background: var(--ink-2); display: grid; grid-template-rows: auto auto minmax(60px, 1fr) auto auto auto; gap: 6px; padding: 8px 8px 10px; }
+.strip { width: 112px; flex: none; background: var(--ink-2); display: grid; grid-template-rows: auto auto minmax(60px, 1fr) auto auto auto; gap: 6px; padding: 8px 8px 10px; }
 .strip .sname { font-weight: 700; font-size: 12px; color: var(--clip-a-edge); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.strip .eq { display: grid; grid-template-columns: 14px 1fr; gap: 2px 4px; align-items: center; font: 600 9.5px var(--mono); color: var(--bone-3); }
+.strip .eq { display: grid; grid-template-columns: 10px 1fr 26px; gap: 2px 4px; align-items: center; font: 600 9.5px var(--mono); color: var(--bone-3); }
+.kf-row .kf-nav { display: flex; gap: 2px; grid-column: 2 / 4; }
+.kf-row .note { white-space: nowrap; }
+.kf-row .kf-on svg { fill: var(--amber, #e8a33d); color: var(--amber, #e8a33d); }
+.strip .eq .val { text-align: right; font-variant-numeric: tabular-nums; }
+.strip .eq .val.on { color: var(--bone); }
 .strip .eq input, .strip .pan input { width: 100%; accent-color: var(--bone-2); height: 12px; }
 .strip .fader { display: grid; grid-template-columns: 1fr 10px; gap: 6px; min-height: 0; }
 .strip .fader input[type=range] { writing-mode: vertical-lr; direction: rtl; width: 22px; height: 100%; min-height: 60px; accent-color: var(--bone); justify-self: center; }
@@ -474,8 +485,31 @@ pre.cmd { margin: 0; padding: 10px 12px; background: var(--ink-0); border: 1px s
 .scope canvas { flex: 1; width: 100%; min-height: 0; background: #03060c; image-rendering: auto; }
 .scope .label { padding: 5px 8px; }
 
-.title-overlay { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.title-overlay div { position: absolute; font-family: "Segoe UI", system-ui, sans-serif; font-weight: 700; white-space: pre; line-height: 1.2; text-shadow: 2px 2px 0 rgba(0,0,0,.55); }
+/* Program viewer: live composite (bottom to top) and its on-screen transform controls. */
+.canvas { position: absolute; inset: 0; touch-action: none; }
+.canvas .layer { position: absolute; overflow: hidden; transform-origin: 50% 50%; }
+.monitor-stage .canvas .layer > video, .monitor-stage .canvas .layer > img { position: absolute; right: auto; bottom: auto; object-fit: fill; background: transparent; }
+.canvas .layer > .dip { position: absolute; inset: 0; pointer-events: none; }
+.canvas .ttl { position: absolute; white-space: pre; pointer-events: none; transform-origin: 50% 50%; }
+.canvas .gizmo { position: absolute; box-sizing: border-box; border: 1px solid var(--amber, #e8a33d); box-shadow: 0 0 0 1px rgba(0,0,0,.5); transform-origin: 50% 50%; cursor: move; }
+.canvas .gizmo.locked { border-style: dashed; border-color: var(--ink-6, #888); cursor: not-allowed; }
+.canvas .gizmo .h { position: absolute; width: 9px; height: 9px; background: #fff; border: 1px solid #000; box-sizing: border-box; }
+.canvas .gizmo .h.nw { left: 0; top: 0; cursor: nwse-resize; }
+.canvas .gizmo .h.se { right: 0; bottom: 0; cursor: nwse-resize; }
+.canvas .gizmo .h.ne { right: 0; top: 0; cursor: nesw-resize; }
+.canvas .gizmo .h.sw { left: 0; bottom: 0; cursor: nesw-resize; }
+.canvas .gizmo .h.n, .canvas .gizmo .h.s { left: calc(50% - 4px); cursor: ns-resize; }
+.canvas .gizmo .h.n { top: 0; } .canvas .gizmo .h.s { bottom: 0; }
+.canvas .gizmo .h.e, .canvas .gizmo .h.w { top: calc(50% - 4px); cursor: ew-resize; }
+.canvas .gizmo .h.e { right: 0; } .canvas .gizmo .h.w { left: 0; }
+.canvas .gizmo .rot { position: absolute; left: calc(50% - 6px); top: -22px; width: 12px; height: 12px; border-radius: 50%; background: var(--amber, #e8a33d); border: 1px solid #000; cursor: grab; }
+.canvas .gizmo .rot::after { content: ""; position: absolute; left: 5px; top: 11px; width: 1px; height: 10px; background: var(--amber, #e8a33d); }
+.canvas .gizmo.rot-below .rot { top: auto; bottom: -22px; }
+.canvas .gizmo.rot-below .rot::after { top: -11px; }
+.canvas .guide { position: absolute; background: #3ad0ff; pointer-events: none; }
+.canvas .guide.v { left: 50%; top: 0; bottom: 0; width: 1px; }
+.canvas .guide.h { top: 50%; left: 0; right: 0; height: 1px; }
+.canvas .ttl-edit { position: absolute; z-index: 2; margin: 0; border: 1px dashed var(--amber, #e8a33d); outline: none; resize: none; overflow: hidden; white-space: pre; background: rgba(0,0,0,.35); box-sizing: content-box; }
 
 .monitor-stage .frame { container-type: inline-size; overflow: hidden; }
 .monitor-stage .frame video, .monitor-stage .frame img.still { transform-origin: 50% 50%; }

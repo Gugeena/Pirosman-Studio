@@ -1,5 +1,6 @@
 // OpenFX catalog loading and applying library effects to clips.
-import { api, type OfxEffect, type OfxPlugin, type OfxValue, type VfxKind } from "./api";
+import { api, type OfxEffect, type OfxPlugin, type OfxValue, type TransitionKind, type VfxKind } from "./api";
+import { clipDur, prevClip } from "./clip";
 import { errText, findClip, run, useUI, type DragPayload } from "./store";
 
 let inflight: Promise<void> | null = null;
@@ -35,6 +36,7 @@ export function paramValue(fx: OfxEffect, name: string, fallback: OfxValue | nul
 /** Add a library effect (OpenFX or built-in) to the end of each video clip's stack. */
 export async function applyEffect(payload: DragPayload, clipIds: string[]) {
   if (payload.kind === "media") return;
+  if (payload.kind === "transition") return applyTransition(payload.transition, payload.label, clipIds);
   const s = useUI.getState();
   if (payload.kind === "ofx" && !payload.plugin.supported) { s.toast("error", `${payload.label} cannot run here: ${payload.plugin.reason ?? "unsupported"}`); return; }
   const targets = clipIds.map((id) => findClip(s.view, id)).filter((x): x is NonNullable<typeof x> => !!x && x.track.kind === "video");
@@ -47,4 +49,21 @@ export async function applyEffect(payload: DragPayload, clipIds: string[]) {
   }
   s.set({ selection: targets.map((t) => t.clip.id) });
   s.toast("ok", `${payload.label} added to ${targets.length === 1 ? targets[0].clip.name : `${targets.length} clips`}`);
+}
+
+/** Put a transition on the cut where each clip starts (1 s, or shorter when either clip is). */
+async function applyTransition(kind: TransitionKind, label: string, clipIds: string[]) {
+  const s = useUI.getState();
+  const rate = s.view?.project.settings.frame_rate;
+  const fps = rate ? Math.round(rate.num / rate.den) : 25;
+  const targets = clipIds.map((id) => findClip(s.view, id)).flatMap((x) => {
+    const prev = x && prevClip(x.track, x.clip);
+    return x && prev ? [{ clip: x.clip, prev }] : [];
+  });
+  if (!targets.length) { s.toast("info", "Drop the transition onto a cut, or select a clip that starts where another ends."); return; }
+  for (const { clip, prev } of targets) {
+    const d = clip.transition_in?.duration_frames ?? Math.max(2, Math.min(fps, clipDur(clip), clipDur(prev)));
+    if (!(await run(api.updateClip(clip.id, { transition_in: { kind, duration_frames: d } })))) return;
+  }
+  s.toast("ok", `${label} added at ${targets.length === 1 ? `the start of ${targets[0].clip.name}` : `${targets.length} cuts`}`);
 }

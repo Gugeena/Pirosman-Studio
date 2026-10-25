@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronRight, Plus, Puzzle, RefreshCw, Search, Sparkles } from "lucide-react";
-import type { OfxPlugin, VfxKind } from "../lib/api";
+import { AlertTriangle, ArrowLeftRight, ChevronDown, ChevronRight, Plus, Puzzle, RefreshCw, Search, Sparkles } from "lucide-react";
+import type { OfxPlugin, TransitionKind, VfxKind } from "../lib/api";
+import { TRANSITIONS } from "../lib/clip";
 import { beginDrag } from "../lib/dnd";
 import { applyEffect, loadOfxCatalog } from "../lib/ofx";
 import { prefs, useUI, type DragPayload } from "../lib/store";
@@ -29,10 +30,13 @@ export function EffectsLibrary({ switcher }: { switcher?: React.ReactNode }) {
     const builtin: Item[] = (Object.keys(VFX_LABEL) as VfxKind[]).map((k) => ({
       key: `vfx:${k}`, label: VFX_LABEL[k], vendor: BUILTIN, category: "Video effects", payload: { kind: "vfx", vfx: k, label: VFX_LABEL[k] },
     }));
+    const transitions: Item[] = (Object.keys(TRANSITIONS) as TransitionKind[]).map((k) => ({
+      key: `tr:${k}`, label: TRANSITIONS[k], vendor: BUILTIN, category: "Video transitions", payload: { kind: "transition", transition: k, label: TRANSITIONS[k] },
+    }));
     const ofx: Item[] = (cat?.plugins ?? []).map((p) => ({
       key: `ofx:${p.binary}:${p.index}`, label: p.label, vendor: p.vendor, category: p.category, plugin: p, payload: { kind: "ofx", plugin: p, label: p.label },
     }));
-    return [...builtin, ...ofx];
+    return [...transitions, ...builtin, ...ofx];
   }, [cat]);
 
   const vendors = useMemo(() => {
@@ -94,12 +98,12 @@ export function EffectsLibrary({ switcher }: { switcher?: React.ReactNode }) {
                 return (
                   <div
                     key={it.key} className={`fx-item ${off ? "off" : ""}`} role="button" tabIndex={0}
-                    title={off ? `Cannot run in Pirosman: ${it.plugin!.reason}` : `${it.plugin ? `${it.plugin.id} v${it.plugin.version.join(".")}\n` : ""}Drag onto a clip, or double-click to add it to the selected clips`}
+                    title={off ? `Cannot run in Pirosman: ${it.plugin!.reason}` : it.payload.kind === "transition" ? "Drag onto a cut between two clips, or double-click to add it where the selected clips start" : `${it.plugin ? `${it.plugin.id} v${it.plugin.version.join(".")}\n` : ""}Drag onto a clip, or double-click to add it to the selected clips`}
                     onPointerDown={(e) => !off && beginDrag(e, it.payload)}
                     onDoubleClick={() => !off && void applyEffect(it.payload, selection)}
                     onKeyDown={(e) => e.key === "Enter" && !off && void applyEffect(it.payload, selection)}
                   >
-                    {it.plugin ? <Puzzle size={13} className="ic" /> : <Sparkles size={13} className="ic" />}
+                    {it.plugin ? <Puzzle size={13} className="ic" /> : it.payload.kind === "transition" ? <ArrowLeftRight size={13} className="ic" /> : <Sparkles size={13} className="ic" />}
                     <span className="name">{it.label}</span>
                     {off && <AlertTriangle size={12} className="warn-text" />}
                     {!off && <button className="btn icon small ghost add" title="Add to selected clips" onPointerDown={(e) => e.stopPropagation()} onClick={() => void applyEffect(it.payload, selection)}><Plus /></button>}

@@ -277,6 +277,11 @@ pub fn media_from_probe(path: &Path, probe: &Value, project_rate: Rational) -> C
         && audio.is_none()
         && (fmt_name.contains("image2") || fmt_name.ends_with("_pipe") || vcodec.as_deref().map(|c| IMAGE_CODECS.contains(&c)).unwrap_or(false))
         && format.get("duration").and_then(Value::as_str).and_then(|d| d.parse::<f64>().ok()).map(|d| d < 0.1).unwrap_or(true);
+    let size = |k: &str| video.and_then(|v| v.get(k)).and_then(Value::as_u64).filter(|&n| n > 0);
+    if is_image && (size("width").is_none() || size("height").is_none()) {
+        // FFprobe still reports a 0×0 stream for a damaged file with a picture extension.
+        return Err(CoreError::Media(format!("{} is not a readable picture", path.display())));
+    }
     let kind = if is_image {
         MediaKind::Image
     } else if video.is_some() {
@@ -442,10 +447,18 @@ pub fn make_thumbnail(tools: &Tools, src: &Path, at_seconds: f64, out: &Path) ->
     if let Some(d) = out.parent() {
         fs::create_dir_all(d)?;
     }
-    let st = command(&tools.ffmpeg)
-        .args(["-v", "error", "-y", "-ss", &format!("{at_seconds:.3}"), "-i"])
+    let mut cmd = command(&tools.ffmpeg);
+    cmd.args(["-v", "error", "-y"]);
+    // Seeking a still image (even to 0) makes the JPEG demuxer drop its only frame,
+    // and FFmpeg still exits 0 with nothing written.
+    if at_seconds > 0.0 {
+        cmd.args(["-ss", &format!("{at_seconds:.3}")]);
+    }
+    // A .png `out` keeps an image's transparency; .jpg flattens it.
+    let st = cmd
+        .arg("-i")
         .arg(src)
-        .args(["-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "4"])
+        .args(["-frames:v", "1", "-update", "1", "-vf", "scale=320:-2", "-q:v", "4"])
         .arg(out)
         .output()
         .map_err(|e| CoreError::Media(format!("could not run ffmpeg: {e}")))?;
@@ -540,6 +553,8 @@ mod tests {
         let img = json!({"streams":[{"codec_type":"video","codec_name":"png","width":800,"height":600,"avg_frame_rate":"0/0"}],"format":{"format_name":"png_pipe"}});
         let m = media_from_probe(Path::new("logo.png"), &img, Rational::new(25, 1)).unwrap();
         assert_eq!(m.kind, MediaKind::Image);
+        let broken = json!({"streams":[{"codec_type":"video","codec_name":"png","width":0,"height":0}],"format":{"format_name":"image2","duration":"0.040000"}});
+        assert!(media_from_probe(Path::new("x.png"), &broken, Rational::new(25, 1)).is_err(), "0×0 picture");
         assert_eq!(m.duration_frames, None);
         let aud = json!({"streams":[{"codec_type":"audio","codec_name":"pcm_s16le","sample_rate":"44100","channels":1}],"format":{"format_name":"wav","duration":"2.0"}});
         let m = media_from_probe(Path::new("vo.wav"), &aud, Rational::new(25, 1)).unwrap();

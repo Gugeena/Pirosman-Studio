@@ -110,7 +110,7 @@ fn build_view(app: &AppHandle, st: &AppState, s: &mut Session) -> View {
                 id: m.id,
                 status,
                 preview,
-                thumb: st.cache_ref(&st.thumb_path(&sha)),
+                thumb: st.cache_ref(&st.thumb_path(&sha, m.kind == MediaKind::Image)),
                 wave: st.cache_ref(&st.wave_path(&sha)),
                 strip: if strip_frames > 0 { st.cache_ref(&st.strip_path(&sha, strip_frames)) } else { None },
                 strip_frames,
@@ -177,7 +177,7 @@ pub fn spawn_media_jobs(app: AppHandle, items: Vec<pirosman_core::model::MediaRe
                 continue;
             }
             if m.has_video {
-                let t = st.thumb_path(&sha);
+                let t = st.thumb_path(&sha, m.kind == MediaKind::Image);
                 if !t.exists() {
                     let at = m.duration_frames.map(|_| 0.5).unwrap_or(0.0);
                     let _ = media::make_thumbnail(&tools, &src, at, &t);

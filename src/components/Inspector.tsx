@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowDown, ArrowUp, Eye, EyeOff, FolderOpen, GitBranch, Plus, Puzzle, RotateCcw, Trash2 } from "lucide-react";
-import { api, type Clip, type Crop, type DiffEntry, type OfxEffect, type OfxParamInfo, type OfxValue, type TitleClip, type TitlePosition, type Track, type Transform, type TransitionKind, type Vfx, type VfxKind } from "../lib/api";
-import { clipDur, findTitle, speedOf } from "../lib/clip";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Diamond, Eye, EyeOff, FolderOpen, GitBranch, Plus, Puzzle, RotateCcw, Trash2 } from "lucide-react";
+import { api, DEFAULT_TEXT_STYLE, TITLE_FONTS, type Clip, type Crop, type DiffEntry, type OfxEffect, type OfxParamInfo, type OfxValue, type TextAlign, type TextStyle, type TitleClip, type TitlePosition, type Track, type Transform, type TransitionKind, type Vfx, type VfxKind } from "../lib/api";
+import { animatedAt, clipDur, findTitle, layerPatch, sourceFrameAt, speedOf, timelineFrameOf, TRANSITIONS, withKeyframe } from "../lib/clip";
 import { loadOfxCatalog, paramValue, pluginFor } from "../lib/ofx";
 import { findClip, mediaCode, mediaMap, run, useUI } from "../lib/store";
 import { timecode } from "../lib/time";
@@ -192,7 +192,23 @@ function ClipInspector({ track, clip, changes }: { track: Track; clip: Clip; cha
   const dur = clipDur(clip);
   const isV = track.kind === "video";
   const still = m?.kind === "image";
-  const tf = clip.transform ?? IDENTITY;
+  const live = useUI((s) => s.liveTransform);
+  const playhead = useUI((s) => s.playhead);
+  const set = useUI((s) => s.set);
+  const anim = animatedAt(clip, playhead);
+  const tf = live?.id === clip.id ? live.tf : anim.tf;
+  const keys = clip.keyframes ?? [];
+  const here = Math.round(sourceFrameAt(clip, playhead));
+  const atKey = keys.some((k) => k.frame === here);
+  const inClip = playhead >= clip.start && playhead < clip.start + clipDur(clip);
+  const keyFrames = keys.map((k) => Math.round(timelineFrameOf(clip, k.frame))).sort((a, b) => a - b);
+  const prevKey = [...keyFrames].reverse().find((f) => f < playhead);
+  const nextKey = keyFrames.find((f) => f > playhead);
+  const layer = (p: { transform?: Transform; opacity?: number }) => patch(layerPatch(clip, playhead, p));
+  // Removing the last keyframe keeps the picture as it is now.
+  const toggleKey = () => patch(atKey
+    ? (keys.length === 1 ? { keyframes: [], transform: anim.tf, opacity: anim.opacity } : { keyframes: keys.filter((k) => k.frame !== here) })
+    : { keyframes: withKeyframe(clip, playhead, anim.tf, anim.opacity) });
   const cr = clip.crop ?? NO_CROP;
   const vfx = clip.vfx ?? [];
   const patch = (p: Parameters<typeof api.updateClip>[1]) => run(api.updateClip(clip.id, p));
@@ -239,7 +255,8 @@ function ClipInspector({ track, clip, changes }: { track: Track; clip: Clip; cha
           <span>In from cut</span>
           <select className="select" disabled={!prev} value={tr?.kind ?? "none"} title={prev ? undefined : "No clip ends where this one starts"}
             onChange={(e) => patch({ transition_in: e.target.value === "none" ? null : { kind: e.target.value as TransitionKind, duration_frames: tr?.duration_frames ?? fps } })}>
-            <option value="none">None</option><option value="cross_dissolve">Cross dissolve</option><option value="dip_to_black">Dip to black</option>
+            <option value="none">None</option>
+            {(Object.keys(TRANSITIONS) as TransitionKind[]).map((k) => <option key={k} value={k}>{TRANSITIONS[k]}</option>)}
           </select>
           {tr ? (
             <input className="input num" defaultValue={tr.duration_frames} key={tr.duration_frames} aria-label="Transition frames"
@@ -252,14 +269,25 @@ function ClipInspector({ track, clip, changes }: { track: Track; clip: Clip; cha
 
       {isV && (
         <section className="insp-sec">
-          <span className="label" style={{ display: "flex" }}>Transform & crop<span className="spacer" />
-            <button className="btn icon small ghost" title="Reset transform and crop" disabled={JSON.stringify(tf) === JSON.stringify(IDENTITY) && JSON.stringify(cr) === JSON.stringify(NO_CROP)} onClick={() => patch({ transform: IDENTITY, crop: NO_CROP })}><RotateCcw /></button>
+          <span className="label" style={{ display: "flex" }}>Transform, crop & opacity<span className="spacer" />
+            <button className="btn icon small ghost" title="Reset transform and crop" disabled={JSON.stringify(tf) === JSON.stringify(IDENTITY) && JSON.stringify(cr) === JSON.stringify(NO_CROP) && (clip.opacity ?? 1) === 1 && !keys.length} onClick={() => patch({ transform: IDENTITY, crop: NO_CROP, opacity: 1, keyframes: [] })}><RotateCcw /></button>
           </span>
-          <Num label="Zoom X" value={tf.scale_x} min={0.05} max={8} step={0.01} onCommit={(v) => patch({ transform: { ...tf, scale_x: v } })} />
-          <Num label="Zoom Y" value={tf.scale_y} min={0.05} max={8} step={0.01} onCommit={(v) => patch({ transform: { ...tf, scale_y: v } })} />
-          <Num label="Position X" value={tf.position_x} min={-2} max={2} step={0.005} onCommit={(v) => patch({ transform: { ...tf, position_x: v } })} />
-          <Num label="Position Y" value={tf.position_y} min={-2} max={2} step={0.005} onCommit={(v) => patch({ transform: { ...tf, position_y: v } })} />
-          <Num label="Rotation" value={tf.rotation_deg} min={-180} max={180} step={0.5} unit="°" onCommit={(v) => patch({ transform: { ...tf, rotation_deg: v } })} />
+          <div className="slider-row kf-row">
+            <span>Keyframes</span>
+            <span className="kf-nav">
+              <button className="btn icon small ghost" title="Previous keyframe" disabled={prevKey === undefined} onClick={() => set({ playhead: prevKey!, playing: false })}><ChevronLeft /></button>
+              <button className={`btn icon small ghost ${atKey ? "kf-on" : ""}`} disabled={!inClip} aria-pressed={atKey}
+                title={!inClip ? "Move the playhead over this clip" : atKey ? "Remove the keyframe here" : "Add a keyframe here: transform and opacity then animate between keyframes"} onClick={toggleKey}><Diamond /></button>
+              <button className="btn icon small ghost" title="Next keyframe" disabled={nextKey === undefined} onClick={() => set({ playhead: nextKey!, playing: false })}><ChevronRight /></button>
+            </span>
+            <span className="note">{keys.length ? `${keys.length} key${keys.length === 1 ? "" : "s"}` : "static"}</span>
+          </div>
+          <Num label="Zoom X" value={tf.scale_x} min={0.05} max={8} step={0.01} onCommit={(v) => layer({ transform: { ...tf, scale_x: v } })} />
+          <Num label="Zoom Y" value={tf.scale_y} min={0.05} max={8} step={0.01} onCommit={(v) => layer({ transform: { ...tf, scale_y: v } })} />
+          <Num label="Position X" value={tf.position_x} min={-2} max={2} step={0.005} onCommit={(v) => layer({ transform: { ...tf, position_x: v } })} />
+          <Num label="Position Y" value={tf.position_y} min={-2} max={2} step={0.005} onCommit={(v) => layer({ transform: { ...tf, position_y: v } })} />
+          <Num label="Rotation" value={tf.rotation_deg} min={-180} max={180} step={0.5} unit="°" onCommit={(v) => layer({ transform: { ...tf, rotation_deg: v } })} />
+          <Num label="Opacity" value={anim.opacity * 100} min={0} max={100} step={1} unit="%" onCommit={(v) => layer({ opacity: Math.round(v) / 100 })} />
           {(["left", "right", "top", "bottom"] as const).map((k) => (
             <Num key={k} label={`Crop ${k}`} value={cr[k] * 100} min={0} max={45} step={0.5} unit="%" onCommit={(v) => patch({ crop: { ...cr, [k]: Math.round(v * 10) / 1000 } })} />
           ))}
@@ -315,27 +343,87 @@ function ClipInspector({ track, clip, changes }: { track: Track; clip: Clip; cha
 }
 
 function TitleInspector({ title }: { title: TitleClip }) {
+  const height = useUI((s) => s.view?.project.settings.height ?? 1080);
+  const live = useUI((s) => s.liveTransform);
   const [text, setText] = useState(title.text);
   useEffect(() => setText(title.text), [title.id, title.text]);
   const patch = (p: Parameters<typeof api.updateTitle>[1]) => run(api.updateTitle(title.id, p));
+  const st = { ...DEFAULT_TEXT_STYLE, ...title.style };
+  const style = (p: Partial<TextStyle>) => patch({ style: { ...st, ...p } });
+  const tf = live?.id === title.id ? live.tf : title.transform ?? null;
+  const move = (p: Partial<Transform>) => patch({ transform: { ...(tf ?? IDENTITY), ...p } });
+  const bg = st.background;
+  const bgAlpha = bg ? parseInt(bg.slice(7), 16) / 255 : 0.6;
+  const setBg = (hex: string, a: number) => style({ background: hex + Math.round(a * 255).toString(16).padStart(2, "0") });
   return (
-    <section className="insp-sec">
-      <span className="label">Title</span>
-      <label className="field"><span>Text</span>
-        <textarea className="textarea" rows={3} value={text} onChange={(e) => setText(e.target.value)} onBlur={() => text !== title.text && text.trim() && patch({ text })} />
-      </label>
-      <Num label="Size" value={title.font_size} min={8} max={400} step={1} unit="px" onCommit={(v) => patch({ font_size: Math.round(v) })} />
-      <div className="slider-row">
-        <span>Color</span>
-        <input type="color" value={title.color_hex} onChange={(e) => patch({ color_hex: e.target.value })} aria-label="Title color" style={{ width: "100%", height: 24, background: "none", border: 0 }} />
-        <select className="select" style={{ gridColumn: "3 / 5" }} value={title.position} onChange={(e) => patch({ position: e.target.value as TitlePosition })}>
-          <option value="top">Top</option><option value="center">Center</option><option value="bottom">Bottom</option><option value="lower_third">Lower third</option>
-        </select>
-      </div>
-      <Num label="Duration" value={title.duration} min={1} max={20000} step={1} unit="f" onCommit={(v) => patch({ duration: Math.round(v) })} />
-      <Num label="Fade in" value={title.fade_in_frames ?? 0} min={0} max={title.duration} step={1} unit="f" onCommit={(v) => patch({ fade_in_frames: Math.round(v) })} />
-      <Num label="Fade out" value={title.fade_out_frames ?? 0} min={0} max={title.duration} step={1} unit="f" onCommit={(v) => patch({ fade_out_frames: Math.round(v) })} />
-    </section>
+    <>
+      <section className="insp-sec">
+        <span className="label">Title</span>
+        <label className="field"><span>Text</span>
+          <textarea className="textarea" rows={3} value={text} onChange={(e) => setText(e.target.value)} onBlur={() => text !== title.text && text.trim() && patch({ text })} />
+        </label>
+        <div className="slider-row">
+          <span>Font</span>
+          <select className="select" style={{ gridColumn: "2 / 4" }} value={st.font || "Segoe UI"} aria-label="Font" onChange={(e) => style({ font: e.target.value === "Segoe UI" ? "" : e.target.value })}>
+            {TITLE_FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
+          </select>
+          <label className="check"><input type="checkbox" checked={st.bold} onChange={(e) => style({ bold: e.target.checked })} />Bold</label>
+        </div>
+        <Num label="Size" value={title.font_size} min={8} max={Math.max(16, height)} step={1} unit="px" onCommit={(v) => patch({ font_size: Math.round(v) })} />
+        <div className="slider-row">
+          <span>Color</span>
+          <input type="color" value={title.color_hex} onChange={(e) => patch({ color_hex: e.target.value })} aria-label="Title color" style={{ width: "100%", height: 24, background: "none", border: 0 }} />
+          <select className="select" style={{ gridColumn: "3 / 5" }} value={st.align} aria-label="Alignment" onChange={(e) => style({ align: e.target.value as TextAlign })}>
+            <option value="left">Align left</option><option value="center">Align center</option><option value="right">Align right</option>
+          </select>
+        </div>
+        <Num label="Line spacing" value={st.line_spacing} min={0} max={3} step={0.05} onCommit={(v) => style({ line_spacing: v })} />
+        <Num label="Opacity" value={st.opacity * 100} min={0} max={100} step={1} unit="%" onCommit={(v) => style({ opacity: Math.round(v) / 100 })} />
+      </section>
+
+      <section className="insp-sec">
+        <span className="label">Outline, shadow & background</span>
+        <div className="slider-row">
+          <span>Outline</span>
+          <input type="color" value={st.outline_hex} onChange={(e) => style({ outline_hex: e.target.value })} aria-label="Outline color" style={{ width: "100%", height: 24, background: "none", border: 0 }} />
+          <label className="check" style={{ gridColumn: "3 / 5" }}><input type="checkbox" checked={st.shadow} onChange={(e) => style({ shadow: e.target.checked })} />Drop shadow</label>
+        </div>
+        <Num label="Outline width" value={st.outline_px} min={0} max={Math.floor(Math.max(16, height) / 10)} step={1} unit="px" onCommit={(v) => style({ outline_px: Math.round(v) })} />
+        <div className="slider-row">
+          <span>Background</span>
+          <input type="color" disabled={!bg} value={bg ? bg.slice(0, 7) : "#000000"} onChange={(e) => setBg(e.target.value, bgAlpha)} aria-label="Background color" style={{ width: "100%", height: 24, background: "none", border: 0 }} />
+          <label className="check" style={{ gridColumn: "3 / 5" }}><input type="checkbox" checked={!!bg} onChange={(e) => (e.target.checked ? setBg("#000000", 0.6) : style({ background: null }))} />Box</label>
+        </div>
+        {bg && <Num label="Box opacity" value={Math.round(bgAlpha * 100)} min={0} max={100} step={1} unit="%" onCommit={(v) => setBg(bg.slice(0, 7), v / 100)} />}
+      </section>
+
+      <section className="insp-sec">
+        <span className="label">Placement</span>
+        <div className="slider-row">
+          <span>Layout</span>
+          <select className="select" style={{ gridColumn: "2 / 5" }} value={tf ? "free" : title.position} aria-label="Placement"
+            onChange={(e) => (e.target.value === "free" ? patch({ transform: IDENTITY }) : patch({ transform: null, position: e.target.value as TitlePosition }))}>
+            <option value="free">Free (drag in viewer)</option>
+            <option value="top">Top</option><option value="center">Center</option><option value="bottom">Bottom</option><option value="lower_third">Lower third</option>
+          </select>
+        </div>
+        {tf && (
+          <>
+            <Num label="Position X" value={tf.position_x} min={-2} max={2} step={0.005} onCommit={(v) => move({ position_x: v })} />
+            <Num label="Position Y" value={tf.position_y} min={-2} max={2} step={0.005} onCommit={(v) => move({ position_y: v })} />
+            <Num label="Scale" value={tf.scale_x} min={0.05} max={8} step={0.01} onCommit={(v) => move({ scale_x: v, scale_y: v })} />
+            <Num label="Rotation" value={tf.rotation_deg} min={-180} max={180} step={0.5} unit="°" onCommit={(v) => move({ rotation_deg: v })} />
+          </>
+        )}
+      </section>
+
+      <section className="insp-sec">
+        <span className="label">Timing</span>
+        <Num label="Duration" value={title.duration} min={1} max={20000} step={1} unit="f" onCommit={(v) => patch({ duration: Math.round(v) })} />
+        <Num label="Fade in" value={title.fade_in_frames ?? 0} min={0} max={title.duration} step={1} unit="f" onCommit={(v) => patch({ fade_in_frames: Math.round(v) })} />
+        <Num label="Fade out" value={title.fade_out_frames ?? 0} min={0} max={title.duration} step={1} unit="f" onCommit={(v) => patch({ fade_out_frames: Math.round(v) })} />
+      </section>
+    </>
   );
 }
 

@@ -11,7 +11,7 @@ use serde_json::Map;
 use uuid::Uuid;
 
 use crate::error::{CoreError, CoreResult};
-use crate::model::{Clip, ColorParams, Crop, Marker, MediaKind, OfxEffect, Project, TitleClip, TitlePosition, Track, TrackKind, Transform, Transition, Vfx, MARKER_COLORS};
+use crate::model::{Clip, ColorParams, Crop, Keyframe, Marker, MediaKind, OfxEffect, Project, TextStyle, TitleClip, TitlePosition, Track, TrackKind, Transform, Transition, Vfx, MARKER_COLORS};
 
 fn transact<T>(p: &mut Project, f: impl FnOnce(&mut Project) -> CoreResult<T>) -> CoreResult<T> {
     let mut q = p.clone();
@@ -608,6 +608,8 @@ pub struct ClipPatch {
     pub lut: Option<Option<String>>,
     pub transform: Option<Transform>,
     pub crop: Option<Crop>,
+    pub opacity: Option<f64>,
+    pub keyframes: Option<Vec<Keyframe>>,
     pub vfx: Option<Vec<Vfx>>,
     pub ofx: Option<Vec<OfxEffect>>,
 }
@@ -657,6 +659,12 @@ pub fn update_clip(p: &mut Project, clip_id: Uuid, patch: ClipPatch) -> CoreResu
         }
         if let Some(cr) = patch.crop {
             c.crop = cr;
+        }
+        if let Some(k) = patch.keyframes {
+            c.keyframes = k;
+        }
+        if let Some(o) = patch.opacity {
+            c.opacity = o;
         }
         if let Some(v) = patch.vfx {
             c.vfx = v;
@@ -817,6 +825,8 @@ pub fn add_title(p: &mut Project, req: NewTitle) -> CoreResult<Uuid> {
             position: req.position.unwrap_or(TitlePosition::LowerThird),
             fade_in_frames: 0,
             fade_out_frames: 0,
+            transform: None,
+            style: TextStyle::default(),
             extra: Map::new(),
         };
         if !range_free(&q.tracks[ti], x.start, x.end(), &[]) {
@@ -849,6 +859,10 @@ pub struct TitlePatch {
     pub duration: Option<i64>,
     pub fade_in_frames: Option<i64>,
     pub fade_out_frames: Option<i64>,
+    pub style: Option<TextStyle>,
+    /// `Some(None)` returns the title to its `position` preset.
+    #[serde(default, with = "double_option")]
+    pub transform: Option<Option<Transform>>,
 }
 
 pub fn update_title(p: &mut Project, id: Uuid, patch: TitlePatch) -> CoreResult<()> {
@@ -876,6 +890,12 @@ pub fn update_title(p: &mut Project, id: Uuid, patch: TitlePatch) -> CoreResult<
         }
         if let Some(v) = patch.fade_out_frames {
             x.fade_out_frames = v;
+        }
+        if let Some(v) = patch.style {
+            x.style = v;
+        }
+        if let Some(v) = patch.transform {
+            x.transform = v;
         }
         Ok(())
     })

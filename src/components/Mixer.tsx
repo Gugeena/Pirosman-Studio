@@ -38,16 +38,18 @@ function Strip({ t }: { t: Track }) {
   };
   const v = { volume_db: t.volume_db ?? 0, pan: t.pan ?? 0, eq_low_db: t.eq_low_db ?? 0, eq_mid_db: t.eq_mid_db ?? 0, eq_high_db: t.eq_high_db ?? 0, ...draft };
   const h = Math.max(0, Math.min(100, ((db + 60) / 66) * 100));
-  const eq = (k: "eq_low_db" | "eq_mid_db" | "eq_high_db", label: string) => (
+  // Same bands as the export (render.rs: bass f=100, equalizer f=1000 w=1.5 octaves, treble f=8000).
+  const eq = (k: "eq_low_db" | "eq_mid_db" | "eq_high_db", label: string, band: string) => (
     <>
-      <span>{label}</span>
-      <input type="range" min={-12} max={12} step={0.5} value={v[k]} title={`${label} ${v[k].toFixed(1)} dB (double-click to reset)`} onChange={(e) => patch({ [k]: Number(e.target.value) })} onDoubleClick={() => patch({ [k]: 0 })} />
+      <span title={band}>{label}</span>
+      <input type="range" min={-18} max={18} step={0.5} value={v[k]} aria-label={`${band} EQ`} title={`${band}: ${v[k].toFixed(1)} dB (double-click to reset)`} onChange={(e) => patch({ [k]: Number(e.target.value) })} onDoubleClick={() => patch({ [k]: 0 })} />
+      <span className={`val ${v[k] ? "on" : ""}`}>{v[k] > 0 ? "+" : ""}{v[k] % 1 ? v[k].toFixed(1) : v[k]}</span>
     </>
   );
   return (
     <div className="strip" aria-label={`${t.name} channel strip`}>
       <div className="sname" title={t.name}>{t.name}</div>
-      <div className="eq">{eq("eq_high_db", "H")}{eq("eq_mid_db", "M")}{eq("eq_low_db", "L")}</div>
+      <div className="eq">{eq("eq_high_db", "H", "High shelf 8 kHz")}{eq("eq_mid_db", "M", "Mid bell 1 kHz")}{eq("eq_low_db", "L", "Low shelf 100 Hz")}</div>
       <div className="fader">
         <input type="range" min={-60} max={12} step={0.5} value={v.volume_db} aria-label="Fader" onChange={(e) => patch({ volume_db: Number(e.target.value) })} onDoubleClick={() => patch({ volume_db: 0 })} />
         <div className="meter" title={`${db.toFixed(1)} dBFS`}><div style={{ height: `${h}%` }} /></div>

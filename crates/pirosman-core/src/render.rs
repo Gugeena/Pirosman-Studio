@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use crate::error::{CoreError, CoreResult};
 use crate::media::{command, ffprobe_json, media_status, MediaStatus, Tools};
-use crate::model::{dissolve_halves, Clip, ColorParams, MediaKind, Project, TitleClip, TitlePosition, Track, TrackKind, TransitionKind};
+use crate::model::{dissolve_halves, Clip, ColorParams, Keyframe, MediaKind, Project, TextAlign, TextStyle, TitleClip, TitlePosition, Track, TrackKind, Transition, TransitionKind, TITLE_FONTS};
 use crate::time::{ffmpeg_time, frames_to_micros, frames_to_samples, Rational};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,34 +260,25 @@ fn title_xy(pos: TitlePosition) -> (&'static str, &'static str) {
 /// `tail` frames after its end).
 pub(crate) fn handles(t: &Track, c: &Clip) -> (i64, i64) {
     let lead = match c.transition_in {
-        Some(tr) if tr.kind == TransitionKind::CrossDissolve => dissolve_halves(tr.duration_frames).0,
+        Some(tr) if tr.kind.overlaps() => dissolve_halves(tr.duration_frames).0,
         _ => 0,
     };
-    let tail = t
-        .clips
-        .iter()
-        .find(|o| o.id != c.id && o.start == c.end())
-        .and_then(|o| o.transition_in)
-        .filter(|tr| tr.kind == TransitionKind::CrossDissolve)
-        .map(|tr| dissolve_halves(tr.duration_frames).1)
-        .unwrap_or(0);
+    let tail = next_transition(t, c).filter(|tr| tr.kind.overlaps()).map(|tr| dissolve_halves(tr.duration_frames).1).unwrap_or(0);
     (lead, tail)
+}
+
+/// The transition on the cut where `c` ends (stored on the clip that follows it).
+fn next_transition(t: &Track, c: &Clip) -> Option<Transition> {
+    t.clips.iter().find(|o| o.id != c.id && o.start == c.end()).and_then(|o| o.transition_in)
 }
 
 /// Dip-to-black halves at the clip's head (incoming) and tail (outgoing).
 fn dips(t: &Track, c: &Clip) -> (i64, i64) {
     let head = match c.transition_in {
-        Some(tr) if tr.kind == TransitionKind::DipToBlack => tr.duration_frames - tr.duration_frames / 2,
+        Some(tr) if !tr.kind.overlaps() => tr.duration_frames - tr.duration_frames / 2,
         _ => 0,
     };
-    let tail = t
-        .clips
-        .iter()
-        .find(|o| o.id != c.id && o.start == c.end())
-        .and_then(|o| o.transition_in)
-        .filter(|tr| tr.kind == TransitionKind::DipToBlack)
-        .map(|tr| tr.duration_frames / 2)
-        .unwrap_or(0);
+    let tail = next_transition(t, c).filter(|tr| !tr.kind.overlaps()).map(|tr| tr.duration_frames / 2).unwrap_or(0);
     (head, tail)
 }
 
@@ -404,7 +395,7 @@ pub fn build_plan_with(p: &Project, s: &RenderSettings, check_files: bool, pre: 
                         num(cr.top)
                     ));
                 }
-                f.push(format!("scale={w}:{h}:force_original_aspect_ratio=decrease,setsar=1,format=yuv420p"));
+                f.push(format!("scale={w}:{h}:force_original_aspect_ratio=decrease,setsar=1,format=yuva420p"));
                 if let Some(cf) = color_filters(&c.color) {
                     f.push(cf);
                 }
@@ -417,38 +408,93 @@ pub fn build_plan_with(p: &Project, s: &RenderSettings, check_files: bool, pre: 
                 for fx in c.vfx.iter().filter(|v| v.enabled && v.amount > 0.0) {
                     f.push(vfx_filter(fx, layer, w));
                 }
-                // Dips go through black (colour fades); clip fades and dissolves use alpha.
+                // Dips go through a colour (colour fades); clip fades and dissolves use alpha.
+                let white = |tr: Option<Transition>| if tr.is_some_and(|tr| tr.kind == TransitionKind::DipToWhite) { ":c=white" } else { "" };
                 if dip_in > 0 {
-                    f.push(format!("fade=t=in:s=0:n={dip_in}"));
+                    f.push(format!("fade=t=in:s=0:n={dip_in}{}", white(c.transition_in)));
                 }
                 if dip_out > 0 {
-                    f.push(format!("fade=t=out:s={}:n={dip_out}", dur - dip_out));
+                    f.push(format!("fade=t=out:s={}:n={dip_out}{}", dur - dip_out, white(next_transition(t, c))));
                 }
                 f.push("format=yuva420p".into());
+                let animated = !c.keyframes.is_empty();
+                // Source frame of the layer's n-th output frame (`n` is 1-based in sendcmd and perspective).
+                let src = |n: &str| match c.reversed {
+                    true => format!("({}-{}*({n}-1))", c.source_out - 1, num(c.speed)),
+                    false => format!("({}+{}*({n}-1))", c.source_in - lead, num(c.speed)),
+                };
+                let key = |g: fn(&Keyframe) -> f64, n: &str| keyed(&c.keyframes.iter().map(|k| (k.frame, g(k))).collect::<Vec<_>>(), &src(n));
+                if animated {
+                    let path = std::env::temp_dir().join("pirosman-render").join(format!("opacity-{}.txt", c.id));
+                    aux_files.push(AuxFile { path: path.to_string_lossy().into(), contents: format!("0-1000000 [expr] colorchannelmixer aa '{}';\n", key(|k| k.opacity, "N")) });
+                    f.push(format!("sendcmd=f={},colorchannelmixer,format=yuva420p", filter_path(&path.to_string_lossy())));
+                } else if c.opacity < 1.0 {
+                    f.push(format!("lutyuv=a=val*{}", num(c.opacity)));
+                }
                 let tf = c.transform;
-                if tf.scale_x != 1.0 || tf.scale_y != 1.0 {
+                if !animated && (tf.scale_x != 1.0 || tf.scale_y != 1.0) {
                     f.push(format!("scale=trunc(iw*{}/2)*2:trunc(ih*{}/2)*2", num(tf.scale_x), num(tf.scale_y)));
                 }
-                if tf.rotation_deg != 0.0 {
+                if !animated && tf.rotation_deg != 0.0 {
                     let a = num(tf.rotation_deg.to_radians());
                     f.push(format!("rotate={a}:ow=rotw({a}):oh=roth({a}):c=none"));
                 }
-                if lead > 0 {
-                    let d = c.transition_in.map(|t| t.duration_frames).unwrap_or(0);
-                    f.push(format!("fade=t=in:s=0:n={d}:alpha=1"));
+                // Overlapping transitions: this clip starts `lead` early, on top of the outgoing one.
+                let incoming = c.transition_in.filter(|_| lead > 0);
+                if let Some(tr) = incoming {
+                    let d = tr.duration_frames;
+                    match tr.kind {
+                        TransitionKind::Wipe => f.push(format!(
+                            "geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*lte(X,W*(N+1)/{})':enable='lt(n,{d})'",
+                            d + 1
+                        )),
+                        TransitionKind::Slide | TransitionKind::Push => {} // moved by the overlay below
+                        _ => f.push(format!("fade=t=in:s=0:n={d}:alpha=1")),
+                    }
                 } else if c.fade_in_frames > 0 && dip_in == 0 {
                     f.push(format!("fade=t=in:s=0:n={}:alpha=1", c.fade_in_frames));
                 }
                 if tail == 0 && dip_out == 0 && c.fade_out_frames > 0 {
                     f.push(format!("fade=t=out:s={}:n={}:alpha=1", dur - c.fade_out_frames, c.fade_out_frames));
                 }
+                if animated {
+                    // Keyframed: centre the layer on a canvas a little larger than the frame, then pin
+                    // its corners where scale, rotation and position put them on each frame. The
+                    // transparent margin matters: perspective repeats edge pixels outside the quad.
+                    let (sx, sy) = (key(|k| k.transform.scale_x, "in"), key(|k| k.transform.scale_y, "in"));
+                    let (px, py) = (key(|k| k.transform.position_x, "in"), key(|k| k.transform.position_y, "in"));
+                    let a = key(|k| k.transform.rotation_deg.to_radians(), "in");
+                    let corner = |i: usize, dx: &str, dy: &str| {
+                        format!(
+                            "x{i}='W/2+({px})*{w}+({sx})*({dx})*cos({a})-({sy})*({dy})*sin({a})':y{i}='H/2+({py})*{h}+({sx})*({dx})*sin({a})+({sy})*({dy})*cos({a})'"
+                        )
+                    };
+                    f.push(format!("pad={}:{}:(ow-iw)/2:(oh-ih)/2:color=black@0", w + 4, h + 4));
+                    f.push(format!(
+                        "perspective={}:{}:{}:{}:sense=destination:eval=frame",
+                        corner(0, "-W/2", "-H/2"),
+                        corner(1, "W/2", "-H/2"),
+                        corner(2, "-W/2", "H/2"),
+                        corner(3, "W/2", "H/2")
+                    ));
+                }
                 f.push(format!("setpts=PTS-STARTPTS+{}/TB", ffmpeg_time(at, rate)));
                 graph.push(format!("[{input_idx}:v:0]{}[v{layer}]", f.join(",")));
                 let next = format!("o{layer}");
+                // Slide and push move whole layers across the frame during the transition.
+                let secs = |frames: i64| frames as f64 * rate.den as f64 / rate.num as f64;
+                let mut dx = String::new();
+                if let Some(tr) = incoming.filter(|tr| matches!(tr.kind, TransitionKind::Slide | TransitionKind::Push)) {
+                    dx = format!("+main_w*max(0\\,1-(t-{})/{})", num(secs(at)), num(secs(tr.duration_frames)));
+                }
+                if let Some(tr) = next_transition(t, c).filter(|tr| tr.kind == TransitionKind::Push && tail > 0) {
+                    let t0 = c.end() - dissolve_halves(tr.duration_frames).0;
+                    dx = format!("-main_w*min(1\\,max(0\\,(t-{})/{}))", num(secs(t0)), num(secs(tr.duration_frames)));
+                }
                 graph.push(format!(
-                    "[{last}][v{layer}]overlay=x=(main_w-overlay_w)/2+{}*main_w:y=(main_h-overlay_h)/2+{}*main_h:eof_action=pass:repeatlast=0[{next}]",
-                    num(c.transform.position_x),
-                    num(c.transform.position_y)
+                    "[{last}][v{layer}]overlay=x=(main_w-overlay_w)/2+{}*main_w{dx}:y=(main_h-overlay_h)/2+{}*main_h:eof_action=pass:repeatlast=0[{next}]",
+                    num(if animated { 0.0 } else { c.transform.position_x }),
+                    num(if animated { 0.0 } else { c.transform.position_y })
                 ));
                 last = next;
                 layer += 1;
@@ -460,7 +506,7 @@ pub fn build_plan_with(p: &Project, s: &RenderSettings, check_files: bool, pre: 
                     continue;
                 }
                 let font = if check_files {
-                    default_font().ok_or_else(|| CoreError::Media("no system font found for titles (looked for Segoe UI, Arial, DejaVu Sans)".into()))?
+                    title_font(&x.style).ok_or_else(|| CoreError::Media("no system font found for titles (looked for Segoe UI, Arial, DejaVu Sans)".into()))?
                 } else {
                     PathBuf::from("/fonts/test.ttf")
                 };
@@ -468,7 +514,11 @@ pub fn build_plan_with(p: &Project, s: &RenderSettings, check_files: bool, pre: 
                 aux_files.push(AuxFile { path: txt.to_string_lossy().into(), contents: x.text.clone() });
                 graph.push(format!("{}[v{layer}]", title_chain(x, w, h, p.settings.height, rate, &font, &txt)));
                 let next = format!("o{layer}");
-                graph.push(format!("[{last}][v{layer}]overlay=eof_action=pass:repeatlast=0[{next}]"));
+                let at = match x.transform {
+                    Some(tf) => format!("x=(main_w-overlay_w)/2+{}*main_w:y=(main_h-overlay_h)/2+{}*main_h:", num(tf.position_x), num(tf.position_y)),
+                    None => String::new(),
+                };
+                graph.push(format!("[{last}][v{layer}]overlay={at}eof_action=pass:repeatlast=0[{next}]"));
                 last = next;
                 layer += 1;
                 titles += 1;
@@ -519,7 +569,7 @@ pub fn build_plan_with(p: &Project, s: &RenderSettings, check_files: bool, pre: 
                 f.push("apad".into());
                 f.push(format!("atrim=end_sample={n}"));
                 f.push(format!("volume={}dB", num(c.gain_db)));
-                if let Some(tr) = c.transition_in.filter(|t| t.kind == TransitionKind::CrossDissolve) {
+                if let Some(tr) = c.transition_in.filter(|t| t.kind.overlaps()) {
                     f.push(format!("afade=t=in:ss=0:ns={}", smp(tr.duration_frames)));
                 } else if dip_in > 0 {
                     f.push(format!("afade=t=in:ss=0:ns={}", smp(dip_in)));
@@ -651,23 +701,36 @@ pub fn vfx_filter(fx: &crate::model::Vfx, layer: usize, width: u32) -> String {
                 num(a * 0.8)
             )
         }
-        Vignette => format!("vignette=a={}", num(0.2 + a * 1.2)),
-        FilmGrain => format!("noise=alls={}:allf=t", (a * 35.0).round().max(1.0) as i64),
+        Vignette => {
+            // vignette has no alpha formats: darken the colour, then put the alpha back.
+            let (c, k, al) = (format!("vg{layer}c"), format!("vg{layer}k"), format!("vg{layer}a"));
+            format!("split[{c}][{k}];[{k}]alphaextract[{al}];[{c}]vignette=a={}[{c}v];[{c}v][{al}]alphamerge", num(0.2 + a * 1.2))
+        }
+        FilmGrain => {
+            let n = (a * 35.0).round().max(1.0) as i64;
+            format!("noise=c0s={n}:c1s={n}:c2s={n}:allf=t") // colour planes only, not alpha
+        }
         ChromaticAberration => {
             let n = ((a * 16.0 * width as f64 / 1920.0).round() as i64).max(1);
-            format!("format=gbrp,rgbashift=rh={}:bh={n},format=yuv420p", -n)
+            format!("format=gbrap,rgbashift=rh={}:bh={n},format=yuva420p", -n)
         }
     }
 }
 
+/// FFmpeg expression for a value keyed at source frames `(frame, value)`, at
+/// source frame `s`: linear between keys, held before the first and after the last.
+fn keyed(keys: &[(i64, f64)], s: &str) -> String {
+    let mut e = num(keys.last().map_or(0.0, |k| k.1));
+    for w in keys.windows(2).rev() {
+        let ((f0, v0), (f1, v1)) = (w[0], w[1]);
+        e = format!("if(lt({s},{f1}),{}+{}*clip(({s}-{f0})/{},0,1),{e})", num(v0), num(v1 - v0), f1 - f0);
+    }
+    e
+}
+
 /// Lead handle of the clip that follows `c` with a cross dissolve.
 fn lead_of_next(t: &Track, c: &Clip) -> i64 {
-    t.clips
-        .iter()
-        .find(|o| o.id != c.id && o.start == c.end())
-        .and_then(|o| o.transition_in)
-        .map(|tr| dissolve_halves(tr.duration_frames).0)
-        .unwrap_or(0)
+    next_transition(t, c).map(|tr| dissolve_halves(tr.duration_frames).0).unwrap_or(0)
 }
 
 fn title_text_path(x: &TitleClip) -> PathBuf {
@@ -675,27 +738,64 @@ fn title_text_path(x: &TitleClip) -> PathBuf {
 }
 
 fn title_chain(x: &TitleClip, w: u32, h: u32, project_h: u32, rate: Rational, font: &Path, text: &Path) -> String {
-    let (tx, ty) = title_xy(x.position);
-    let size = ((x.font_size as f64) * (h as f64) / (project_h as f64)).round().max(4.0) as i64;
-    let mut f = vec![
-        format!("color=c=black@0.0:s={w}x{h}:r={}:d={}", rate.ffmpeg(), ffmpeg_time(x.duration, rate)),
-        "format=yuva420p".into(),
-        format!(
-            "drawtext=fontfile={}:textfile={}:expansion=none:fontsize={size}:fontcolor=0x{}:x={tx}:y={ty}:line_spacing={}:shadowcolor=black@0.55:shadowx=2:shadowy=2",
-            filter_path(&font.to_string_lossy()),
-            filter_path(&text.to_string_lossy()),
-            &x.color_hex[1..],
-            size / 5
-        ),
-    ];
+    let st = &x.style;
+    // Project pixels to output pixels, times the title's own (uniform) scale.
+    let k = (h as f64) / (project_h as f64) * x.transform.map_or(1.0, |t| t.scale_x);
+    let size = ((x.font_size as f64) * k).round().max(4.0) as i64;
+    // Free placement draws the block centred; the overlay then offsets it.
+    let (tx, ty) = if x.transform.is_some() { ("(w-text_w)/2", "(h-text_h)/2") } else { title_xy(x.position) };
+    let mut dt = format!(
+        "drawtext=fontfile={}:textfile={}:expansion=none:fontsize={size}:fontcolor=0x{}:x={tx}:y={ty}:line_spacing={}",
+        filter_path(&font.to_string_lossy()),
+        filter_path(&text.to_string_lossy()),
+        &x.color_hex[1..],
+        ((size as f64) * st.line_spacing).floor() as i64
+    );
+    if st.shadow {
+        dt.push_str(":shadowcolor=black@0.55:shadowx=2:shadowy=2");
+    }
+    if st.outline_px > 0 {
+        dt.push_str(&format!(":borderw={}:bordercolor=0x{}", ((st.outline_px as f64) * k).round().max(1.0) as i64, &st.outline_hex[1..]));
+    }
+    if let Some(b) = &st.background {
+        dt.push_str(&format!(":box=1:boxcolor=0x{}:boxborderw={}", &b[1..], ((size as f64) * 0.25).round() as i64));
+    }
+    match st.align {
+        TextAlign::Left => {}
+        TextAlign::Center => dt.push_str(":text_align=center"),
+        TextAlign::Right => dt.push_str(":text_align=right"),
+    }
+    let mut f = vec![format!("color=c=black@0.0:s={w}x{h}:r={}:d={}", rate.ffmpeg(), ffmpeg_time(x.duration, rate)), "format=yuva420p".into(), dt];
     if x.fade_in_frames > 0 {
         f.push(format!("fade=t=in:s=0:n={}:alpha=1", x.fade_in_frames));
     }
     if x.fade_out_frames > 0 {
         f.push(format!("fade=t=out:s={}:n={}:alpha=1", x.duration - x.fade_out_frames, x.fade_out_frames));
     }
+    if st.opacity < 1.0 {
+        f.push(format!("lutyuv=a=val*{}", num(st.opacity)));
+    }
+    if let Some(tf) = x.transform.filter(|t| t.rotation_deg != 0.0) {
+        let a = num(tf.rotation_deg.to_radians());
+        f.push(format!("rotate={a}:ow=rotw({a}):oh=roth({a}):c=none"));
+    }
     f.push(format!("setpts=PTS-STARTPTS+{}/TB", ffmpeg_time(x.start, rate)));
     f.join(",")
+}
+
+/// The font file for a title style: the chosen family (bold or regular) from the
+/// Windows fonts folder, else the default title font.
+pub fn title_font(s: &TextStyle) -> Option<PathBuf> {
+    if !s.font.is_empty() || !s.bold {
+        let fam = if s.font.is_empty() { "Segoe UI" } else { s.font.as_str() };
+        if let (Ok(win), Some(f)) = (std::env::var("WINDIR"), TITLE_FONTS.iter().find(|f| f.0 == fam)) {
+            let p = Path::new(&win).join("Fonts").join(if s.bold { f.2 } else { f.1 });
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    default_font()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -957,6 +1057,61 @@ mod tests {
     }
 
     #[test]
+    fn clip_layers_keep_alpha_and_apply_opacity() {
+        use crate::model::{Vfx, VfxKind};
+        let (mut p, c) = edited();
+        let fx = |kind| Vfx { id: Uuid::new_v4(), kind, amount: 0.5, enabled: true };
+        let vfx = vec![fx(VfxKind::Vignette), fx(VfxKind::FilmGrain), fx(VfxKind::ChromaticAberration)];
+        update_clip(&mut p, c, ClipPatch { opacity: Some(0.5), vfx: Some(vfx), ..Default::default() }).unwrap();
+        let g = build_plan(&p, &RenderSettings::from_project(&p, "/o.mp4"), false).unwrap().filtergraph;
+        // Transparent PNGs keep their alpha up to the overlay.
+        assert!(g.contains("setsar=1,format=yuva420p") && !g.contains("setsar=1,format=yuv420p"), "{g}");
+        assert!(g.contains("format=yuva420p,lutyuv=a=val*0.5000"), "{g}");
+        assert!(g.contains("alphaextract") && g.contains("alphamerge"), "vignette restores alpha: {g}");
+        assert!(g.contains("noise=c0s=") && !g.contains("alls="), "grain leaves alpha alone: {g}");
+        assert!(g.contains("format=gbrap,rgbashift") && !g.contains(",format=yuv420p,"), "{g}");
+        assert!(update_clip(&mut p, c, ClipPatch { opacity: Some(1.5), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn styled_and_placed_titles() {
+        use crate::model::{TextAlign, TextStyle, Transform};
+        let (mut p, _) = edited();
+        let v2 = p.tracks[1].id;
+        let t = add_title(&mut p, NewTitle { track_id: v2, start: 0, duration: 25, text: "Hello".into(), font_size: Some(60), color_hex: None, position: None }).unwrap();
+        // Default style: the original drawtext options, preset placement.
+        let g = build_plan(&p, &RenderSettings::from_project(&p, "/o.mp4"), false).unwrap().filtergraph;
+        assert!(g.contains("x=w*0.07:y=h*0.72:line_spacing=12:shadowcolor=black@0.55:shadowx=2:shadowy=2,"), "{g}");
+        assert!(!g.contains("borderw") && !g.contains("box=1") && !g.contains("text_align"), "{g}");
+        let style = TextStyle { align: TextAlign::Center, outline_px: 4, outline_hex: "#ff0000".into(), shadow: false, background: Some("#00000080".into()), opacity: 0.5, ..Default::default() };
+        let tf = Transform { scale_x: 2.0, scale_y: 2.0, position_x: 0.1, position_y: -0.2, rotation_deg: 30.0 };
+        update_title(&mut p, t, TitlePatch { style: Some(style), transform: Some(Some(tf)), ..Default::default() }).unwrap();
+        let g = build_plan(&p, &RenderSettings::from_project(&p, "/o.mp4"), false).unwrap().filtergraph;
+        for needle in [
+            "fontsize=120:", // uniform scale multiplies the size
+            "x=(w-text_w)/2:y=(h-text_h)/2",
+            ":borderw=8:bordercolor=0xff0000",
+            ":box=1:boxcolor=0x00000080:boxborderw=30",
+            ":text_align=center",
+            "lutyuv=a=val*0.5000",
+            "rotate=0.5236:",
+            "overlay=x=(main_w-overlay_w)/2+0.1000*main_w:y=(main_h-overlay_h)/2+-0.2000*main_h:",
+        ] {
+            assert!(g.contains(needle), "{needle} missing: {g}");
+        }
+        assert!(!g.contains("shadowcolor"), "{g}");
+        // Back to the preset: the overlay loses its offsets.
+        update_title(&mut p, t, TitlePatch { transform: Some(None), ..Default::default() }).unwrap();
+        assert!(build_plan(&p, &RenderSettings::from_project(&p, "/o.mp4"), false).unwrap().filtergraph.contains("x=w*0.07:y=h*0.72"));
+        let bad = |s: TextStyle| update_title(&mut p.clone(), t, TitlePatch { style: Some(s), ..Default::default() }).is_err();
+        assert!(bad(TextStyle { font: "Wingdings Pro".into(), ..Default::default() }));
+        assert!(bad(TextStyle { background: Some("#000000".into()), ..Default::default() }));
+        assert!(bad(TextStyle { opacity: 2.0, ..Default::default() }));
+        let skew = Transform { scale_x: 1.0, scale_y: 2.0, ..Default::default() };
+        assert!(update_title(&mut p, t, TitlePatch { transform: Some(Some(skew)), ..Default::default() }).is_err());
+    }
+
+    #[test]
     fn titles_mixer_range_and_formats() {
         let (mut p, _) = edited();
         let v2 = p.tracks[1].id;
@@ -1020,7 +1175,7 @@ mod tests {
         assert!(g.contains("scale=trunc(iw*0.5000/2)*2:trunc(ih*0.5000/2)*2"));
         assert!(g.contains("rotate=1.5708:ow=rotw(1.5708):oh=roth(1.5708):c=none"));
         assert!(g.contains("overlay=x=(main_w-overlay_w)/2+0.2500*main_w:y=(main_h-overlay_h)/2+-0.1000*main_h"));
-        for needle in ["gblur=sigma=12.7500", "blend=all_mode=screen:all_opacity=0.4000", "vignette=a=0.8000", "noise=alls=18:allf=t", "rgbashift=rh=-8:bh=8"] {
+        for needle in ["gblur=sigma=12.7500", "blend=all_mode=screen:all_opacity=0.4000", "vignette=a=0.8000", "noise=c0s=18:c1s=18:c2s=18:allf=t", "rgbashift=rh=-8:bh=8"] {
             assert!(g.contains(needle), "{needle} missing: {g}");
         }
         let mut s = RenderSettings::from_project(&p, "/still.png");

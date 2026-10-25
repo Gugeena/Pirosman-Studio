@@ -126,8 +126,9 @@ impl AppState {
     pub fn proxy_path(&self, sha: &str) -> PathBuf {
         self.cache_dir.join("proxies").join(format!("{sha}.mp4"))
     }
-    pub fn thumb_path(&self, sha: &str) -> PathBuf {
-        self.cache_dir.join("thumbs").join(format!("{sha}.jpg"))
+    /// Images get PNG thumbnails so transparency survives; video gets JPEG.
+    pub fn thumb_path(&self, sha: &str, image: bool) -> PathBuf {
+        self.cache_dir.join("thumbs").join(format!("{sha}.{}", if image { "png" } else { "jpg" }))
     }
     pub fn wave_path(&self, sha: &str) -> PathBuf {
         self.cache_dir.join("waves").join(format!("{sha}.png"))
