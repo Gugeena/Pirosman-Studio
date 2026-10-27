@@ -113,10 +113,11 @@ pub fn validate_bundled(dir: &Path) -> Result<(Tools, String), String> {
     let m: BundleManifest = serde_json::from_str(raw.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("The bundled FFmpeg manifest {} is unreadable ({e}). {REINSTALL}", mpath.display()))?;
     let mut paths = vec![];
+    let check_size = !std::env::current_exe().is_ok_and(|exe| inside_appimage(dir, &exe));
     for name in [format!("ffmpeg{EXE}"), format!("ffprobe{EXE}")] {
         let p = dir.join(&name);
         let md = fs::metadata(&p).map_err(|_| format!("The bundled {name} is missing from {}. {REINSTALL}", dir.display()))?;
-        if let Some(f) = m.files.get(&name) {
+        if let Some(f) = m.files.get(&name).filter(|_| check_size) {
             if md.len() != f.size {
                 return Err(format!("The bundled {name} is damaged: {} bytes instead of {}. {REINSTALL}", md.len(), f.size));
             }
@@ -130,6 +131,17 @@ pub fn validate_bundled(dir: &Path) -> Result<(Tools, String), String> {
     let (ffprobe, _) = paths.pop().unwrap();
     let (ffmpeg, version) = paths.pop().unwrap();
     Ok((Tools { ffmpeg, ffprobe }, version))
+}
+
+/// Whether `dir` is inside the AppImage that `exe` runs from: an AppImage keeps the
+/// executable at `<AppDir>/usr/bin/` with `AppRun` at the AppDir's root. (Decided from
+/// the layout, not from environment variables anyone could set.) linuxdeploy rewrites
+/// the RPATH of every ELF file it packs, so sizes there differ from the manifest; the
+/// image is read-only and cannot be partially extracted, so the size check (which
+/// catches truncated copies) does not apply. The version self-check still runs.
+fn inside_appimage(dir: &Path, exe: &Path) -> bool {
+    let appdir = exe.parent().filter(|d| d.ends_with("usr/bin")).and_then(Path::parent).and_then(Path::parent);
+    cfg!(target_os = "linux") && appdir.is_some_and(|a| a.join("AppRun").is_file() && dir.starts_with(a))
 }
 
 /// Validate an arbitrary folder holding ffmpeg and ffprobe (override or system).
@@ -198,9 +210,8 @@ fn system_dirs() -> Vec<PathBuf> {
             }
         }
     }
-    for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "C:\\ffmpeg\\bin"] {
-        dirs.push(PathBuf::from(d));
-    }
+    let common: &[&str] = if cfg!(windows) { &["C:\\ffmpeg\\bin"] } else { &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] };
+    dirs.extend(common.iter().map(PathBuf::from));
     dirs
 }
 
@@ -611,6 +622,57 @@ mod tests {
         // Discovery surfaces the bundled error rather than a generic one, and never mentions winget.
         let err = discover_with(None, Some(d.path()), vec![]).unwrap_err().to_string();
         assert!(err.contains("failed its self-check") && !err.to_lowercase().contains("winget"), "{err}");
+    }
+
+    /// A Linux bundle as scripts/fetch-ffmpeg.sh writes it: extensionless names in
+    /// the manifest, and the executable bit matters.
+    /// Make a test script executable, then wait out ETXTBSY ("Text file busy"): a process
+    /// another test thread is forking can briefly hold the script's write descriptor.
+    #[cfg(unix)]
+    fn make_executable(p: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..400 {
+            match Command::new(p).arg("-version").output() {
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                _ => return,
+            }
+        }
+        panic!("{} stayed busy", p.display());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_bundle_uses_plain_names_and_needs_the_exec_bit() {
+        let script = b"#!/bin/sh\necho 'ffmpeg version n9.0.2-test Copyright'\n";
+        let n = script.len() as u64;
+        let d = fake_bundle(&[("ffmpeg", script), ("ffprobe", script)], &[("ffmpeg", n), ("ffprobe", n)]);
+        let e = validate_bundled(d.path()).unwrap_err();
+        assert!(e.contains("bundled ffmpeg failed its self-check") && e.contains("could not be started"), "{e}");
+        for t in ["ffmpeg", "ffprobe"] {
+            make_executable(&d.path().join(t));
+        }
+        fs::write(d.path().join("manifest.json"), json!({ "version": "n9.0.2-test", "files": { "ffmpeg": { "size": n }, "ffprobe": { "size": n } } }).to_string()).unwrap();
+        let found = discover_with(None, Some(d.path()), vec![]).unwrap();
+        assert_eq!((found.source, found.tools.ffmpeg, found.tools.ffprobe), (ToolSource::Bundled, d.path().join("ffmpeg"), d.path().join("ffprobe")));
+    }
+
+    #[test]
+    fn appimage_is_recognised_by_its_layout_not_the_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let app = root.path().join("AppDir");
+        fs::create_dir_all(app.join("usr/bin")).unwrap();
+        let (exe, ff) = (app.join("usr/bin/pirosman-studio"), app.join("usr/lib/Pirosman Studio/ffmpeg"));
+        assert!(!inside_appimage(&ff, &exe), "no AppRun: not an AppImage");
+        fs::write(app.join("AppRun"), b"").unwrap();
+        assert_eq!(inside_appimage(&ff, &exe), cfg!(target_os = "linux"));
+        assert!(!inside_appimage(&root.path().join("elsewhere/ffmpeg"), &exe), "only folders inside the AppDir");
+        assert!(!inside_appimage(&ff, &app.join("pirosman-studio")), "the executable must sit in usr/bin");
+        assert!(!inside_appimage(Path::new("/usr/lib/Pirosman Studio/ffmpeg"), Path::new("/usr/bin/pirosman-studio")), "the .deb install");
+        // This test binary is not in an AppImage, so a size mismatch is still rejected (before running anything).
+        let (ff, fp) = (format!("ffmpeg{EXE}"), format!("ffprobe{EXE}"));
+        let d = fake_bundle(&[(&ff, b"x"), (&fp, b"x")], &[(&ff, 9), (&fp, 9)]);
+        assert!(validate_bundled(d.path()).unwrap_err().contains("damaged"));
     }
 
     #[test]

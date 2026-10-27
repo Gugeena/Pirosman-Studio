@@ -1,8 +1,10 @@
 # Third-party notices
 
-Pirosman Studio is licensed MIT OR Apache-2.0 (see `LICENSE-MIT` and `LICENSE-APACHE`). The Windows installer and the portable zip ship those two files, this file, and the third-party programs listed below. The third-party programs keep their own licenses.
+Pirosman Studio is licensed MIT OR Apache-2.0 (see `LICENSE-MIT` and `LICENSE-APACHE`). The Windows installer, the portable zip, the Linux AppImage and the .deb ship those two files, this file, and the third-party programs listed below. The third-party programs keep their own licenses.
 
 ## FFmpeg (bundled, GPL v3)
+
+### Windows
 
 - **What:** `ffmpeg.exe` and `ffprobe.exe`, unmodified, from the FFmpeg 9.0.2 "essentials" static Windows x64 build by [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
 - **Archive:** <https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip>
@@ -22,10 +24,28 @@ Pirosman Studio is licensed MIT OR Apache-2.0 (see `LICENSE-MIT` and `LICENSE-AP
   - Third-party libraries: `BUILD-README.txt` lists the builder's external libraries and versions. The binaries also statically include libraries that list does not name; version strings embedded in `ffmpeg.exe` indicate OpenSSL 3.6.x, GnuTLS 3.8.13, nettle 4.0, GMP 6.3.0, libsodium 1.0.22, libunibreak 5.1, pixman 0.46.4, expat 2.8.4 and zlib 1.3.1, plus bzip2, brotli, libtasn1 and libiconv (versions not recorded).
 - FFmpeg is a trademark of Fabrice Bellard. Pirosman Studio is not affiliated with the FFmpeg project or gyan.dev.
 
+### Linux (x86_64)
+
+- **What:** `ffmpeg` and `ffprobe`, unmodified, from the "gpl" static Linux x86_64 build by [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) of FFmpeg n9.0.2-17-g2a571b6068 (the 9.0 release branch: 9.0.2 plus 17 fixes). It needs glibc 2.28 or newer; every other library is linked in.
+- **Archive:** <https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-9.0.tar.xz>
+- **SHA-256:** `68ee646831adaae2495618346f3bba94ff207ff83bbd34d643e7004730d66269`
+  - This equals the digest GitHub publishes for the release asset.
+  - It is enforced by `scripts/fetch-ffmpeg.sh`.
+- **Installed to:** the `ffmpeg/` folder among the app's resources (`/usr/lib/Pirosman Studio/ffmpeg/` from the .deb; inside the AppImage). That folder also holds `LICENSE.txt` (GPL v3), `BUILD-README.txt` (the output of `ffmpeg -buildconf`), `NOTICE.txt` (from `packaging/FFMPEG_NOTICE-linux.txt`) and `manifest.json`.
+- **License:** configured with `--enable-gpl --enable-version3` and including GPL libraries such as libx264 and libx265, so the binaries are under the GNU GPL v3.
+- **Source code:**
+  - FFmpeg commit of this build: <https://github.com/FFmpeg/FFmpeg/commit/2a571b606854520cf89804d8030c8b328e621689>
+  - Build scripts and pinned third-party library versions at this release: <https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-09-30-13-08>
+- Pirosman Studio is not affiliated with BtbN.
+
 ## Microsoft Edge WebView2
 
 - **WebView2 loader:** the release (MSVC) build links Microsoft's WebView2 loader statically into the executable (`WebView2LoaderStatic.lib` from the WebView2 SDK, via the `webview2-com-sys` crate), so no separate `WebView2Loader.dll` ships. The loader is under Microsoft's WebView2 SDK license.
 - **WebView2 Runtime:** not shipped. The installer runs Microsoft's Evergreen bootstrapper, `MicrosoftEdgeWebview2Setup.exe`, when the runtime is missing. That download is subject to Microsoft's terms.
+
+## Linux system libraries
+
+The .deb uses the system's WebKitGTK, GTK and GStreamer. The AppImage carries its own copies of these and the other shared libraries they need (gathered by linuxdeploy, including GStreamer and its plugins), each under its own license, mostly LGPL.
 
 ## Rust and npm dependencies
 

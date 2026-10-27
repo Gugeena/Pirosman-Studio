@@ -784,7 +784,7 @@ fn title_chain(x: &TitleClip, w: u32, h: u32, project_h: u32, rate: Rational, fo
 }
 
 /// The font file for a title style: the chosen family (bold or regular) from the
-/// Windows fonts folder, else the default title font.
+/// Windows fonts folder or, elsewhere, from fontconfig; else the default title font.
 pub fn title_font(s: &TextStyle) -> Option<PathBuf> {
     if !s.font.is_empty() || !s.bold {
         let fam = if s.font.is_empty() { "Segoe UI" } else { s.font.as_str() };
@@ -794,8 +794,34 @@ pub fn title_font(s: &TextStyle) -> Option<PathBuf> {
                 return Some(p);
             }
         }
+        if !cfg!(windows) && TITLE_FONTS.iter().any(|f| f.0 == fam) {
+            if let Some(p) = fontconfig_file(fam, s.bold) {
+                return Some(p);
+            }
+        }
     }
     default_font()
+}
+
+/// fontconfig's file for a family (or its usual stand-in, e.g. Liberation Sans for Arial).
+/// Remembered per family and weight: render plans are rebuilt on every settings change.
+/// shortcut: fonts installed while the app runs are picked up after a restart.
+fn fontconfig_file(fam: &str, bold: bool) -> Option<PathBuf> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(String, bool), Option<PathBuf>>>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().unwrap().get(&(fam.to_string(), bold)) {
+        return hit.clone();
+    }
+    let q = format!("{fam}:weight={}", if bold { "bold" } else { "regular" });
+    let found = crate::media::command(Path::new("fc-match"))
+        .args(["--format=%{file}", &q])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+        .filter(|p| p.is_file());
+    cache.lock().unwrap().insert((fam.to_string(), bold), found.clone());
+    found
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1191,5 +1217,97 @@ mod tests {
     #[test]
     fn filter_paths_are_escaped() {
         assert_eq!(filter_path("C:\\Users\\a b\\it's.cube"), "'C\\:/Users/a b/it'\\''s.cube'");
+    }
+
+    /// Filter names in a filtergraph: split on `,`/`;` outside quotes and escapes,
+    /// drop `[label]`s, keep what precedes `=`.
+    fn filter_names(graph: &str) -> std::collections::BTreeSet<String> {
+        let (mut out, mut cur, mut quoted, mut chars) = (std::collections::BTreeSet::new(), String::new(), false, graph.chars());
+        let mut flush = |s: &mut String| {
+            let mut t = s.trim();
+            while let Some(rest) = t.strip_prefix('[') {
+                t = rest.split_once(']').map_or("", |x| x.1).trim_start();
+            }
+            let name = t.split(['=', '[']).next().unwrap_or("").trim();
+            if !name.is_empty() {
+                out.insert(name.to_string());
+            }
+            s.clear();
+        };
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    cur.push(c);
+                    cur.extend(chars.next());
+                }
+                '\'' => {
+                    quoted = !quoted;
+                    cur.push(c);
+                }
+                ',' | ';' if !quoted => flush(&mut cur),
+                _ => cur.push(c),
+            }
+        }
+        flush(&mut cur);
+        out
+    }
+
+    /// Every filter any render plan can use must be in scripts/ffmpeg-requirements.txt,
+    /// which both fetch scripts check the pinned FFmpeg builds against.
+    #[test]
+    fn render_filters_are_all_required_of_the_pinned_ffmpeg() {
+        use crate::model::{Keyframe, TextAlign, TextStyle, Transform, Vfx, VfxKind};
+        let required: std::collections::BTreeSet<&str> = include_str!("../../../scripts/ffmpeg-requirements.txt")
+            .lines()
+            .filter_map(|l| l.strip_prefix("filter "))
+            .map(str::trim)
+            .collect();
+        let mut used = std::collections::BTreeSet::new();
+        let mut plan = |p: &Project| used.extend(filter_names(&build_plan(p, &RenderSettings::from_project(p, "/o.mp4"), false).unwrap().filtergraph));
+        // Grade, LUT, every effect, opacity, crop, transform, fades, speed, reverse, mixer, titles.
+        let (mut p, c) = edited();
+        let fx = |kind| Vfx { id: Uuid::new_v4(), kind, amount: 0.5, enabled: true };
+        let mut col = crate::model::ColorParams::default();
+        col.saturation = 1.3;
+        col.lift = 0.05;
+        update_clip(&mut p, c, ClipPatch {
+            color: Some(col),
+            lut: Some(Some("/luts/look.cube".into())),
+            vfx: Some([VfxKind::GaussianBlur, VfxKind::Glow, VfxKind::Vignette, VfxKind::FilmGrain, VfxKind::ChromaticAberration].map(fx).to_vec()),
+            opacity: Some(0.5),
+            crop: Some(crate::model::Crop { left: 0.1, ..Default::default() }),
+            transform: Some(Transform { scale_x: 1.5, scale_y: 1.2, rotation_deg: 10.0, ..Default::default() }),
+            fade_in_frames: Some(5),
+            fade_out_frames: Some(5),
+            ..Default::default()
+        })
+        .unwrap();
+        let (v2, a1) = (p.tracks[1].id, p.tracks[2].id);
+        update_track(&mut p, a1, TrackPatch { pan: Some(-0.5), eq_low_db: Some(3.0), eq_mid_db: Some(-2.0), eq_high_db: Some(1.0), volume_db: Some(-1.0), ..Default::default() }).unwrap();
+        let t = add_title(&mut p, NewTitle { track_id: v2, start: 25, duration: 25, text: "A, b; 'c'".into(), font_size: Some(60), color_hex: None, position: None }).unwrap();
+        let style = TextStyle { align: TextAlign::Center, outline_px: 2, background: Some("#00000080".into()), opacity: 0.5, ..Default::default() };
+        update_title(&mut p, t, TitlePatch { style: Some(style), transform: Some(Some(Transform { rotation_deg: 15.0, ..Default::default() })), fade_in_frames: Some(3), ..Default::default() }).unwrap();
+        plan(&p);
+        let mut fast = p.clone();
+        update_clip(&mut fast, c, ClipPatch { speed: Some(2.0), reversed: Some(true), ..Default::default() }).unwrap();
+        plan(&fast);
+        // Keyframes.
+        let k = |frame, x| Keyframe { frame, transform: Transform { position_x: x, ..Default::default() }, opacity: 0.5 };
+        let mut keyed = p.clone();
+        update_clip(&mut keyed, c, ClipPatch { keyframes: Some(vec![k(50, -0.2), k(90, 0.2)]), ..Default::default() }).unwrap();
+        plan(&keyed);
+        // Every transition, across a cut with handles on both sides.
+        let (mut cut, mid) = project();
+        let v1 = cut.tracks[0].id;
+        place_clip(&mut cut, PlaceClip { media_id: mid, track_id: v1, start: 0, source_in: Some(50), source_out: Some(100) }).unwrap();
+        let b = place_clip(&mut cut, PlaceClip { media_id: mid, track_id: v1, start: 50, source_in: Some(120), source_out: Some(170) }).unwrap()[0];
+        for kind in [TransitionKind::CrossDissolve, TransitionKind::DipToBlack, TransitionKind::DipToWhite, TransitionKind::Wipe, TransitionKind::Slide, TransitionKind::Push] {
+            update_clip(&mut cut, b, ClipPatch { transition_in: Some(Some(Transition { kind, duration_frames: 10 })), ..Default::default() }).unwrap();
+            plan(&cut);
+        }
+        // The extractor sees through quotes and escapes (sanity: these are real filters).
+        assert!(used.contains("perspective") && used.contains("geq") && used.contains("drawtext") && used.contains("bass"), "{used:?}");
+        let missing: Vec<_> = used.iter().filter(|f| !required.contains(f.as_str())).collect();
+        assert!(missing.is_empty(), "render plans use filters scripts/ffmpeg-requirements.txt does not list: {missing:?}");
     }
 }

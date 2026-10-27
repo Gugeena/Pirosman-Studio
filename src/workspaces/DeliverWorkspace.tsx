@@ -3,6 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { Camera, CheckCircle2, FileOutput, FolderSearch, Loader2, Play, Square, TerminalSquare, XCircle } from "lucide-react";
 import { exportOtioFlow, grabStillFlow } from "../lib/actions";
 import { api, type RenderPlan, type RenderSettings } from "../lib/api";
+import { inHome } from "../lib/files";
 import { attempt, errText, projectDuration, useUI } from "../lib/store";
 import { bytes, timecode } from "../lib/time";
 import { TimelineMonitor } from "../components/Monitors";
@@ -40,7 +41,8 @@ export function DeliverWorkspace() {
     if (!p || s) return;
     const dir = view?.path ? view.path.replace(/[\\/][^\\/]+$/, "") : "";
     const sep = view?.path?.includes("\\") ? "\\" : "/";
-    api.defaultRenderSettings(`${dir ? dir + sep : ""}${p.name.replace(/[^\w.-]+/g, "_")}.mp4`).then(setS);
+    const file = `${p.name.replace(/[^\w.-]+/g, "_")}.mp4`;
+    api.defaultRenderSettings(dir ? dir + sep + file : inHome(file)).then(setS);
   }, [p?.id]);
 
   // Validate and regenerate the FFmpeg plan as settings or the timeline change.
@@ -62,7 +64,7 @@ export function DeliverWorkspace() {
   const useRange = s.range_in != null || s.range_out != null;
   const browse = async () => {
     const ext = exts[0];
-    const out = await save({ defaultPath: s.output, filters: [{ name: s.video_codec === "none" ? "Audio" : "Video", extensions: exts }] });
+    const out = await save({ defaultPath: inHome(s.output), filters: [{ name: s.video_codec === "none" ? "Audio" : "Video", extensions: exts }] });
     if (out) up({ output: /\.[A-Za-z0-9]+$/.test(out) ? out : `${out}.${ext}` });
   };
   const start = async () => {

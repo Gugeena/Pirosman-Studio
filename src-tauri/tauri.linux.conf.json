@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeDevCommand": "npm run fetch-ffmpeg && npm run build:ofx && npm run dev",
+    "beforeBuildCommand": "npm run fetch-ffmpeg && npm run build:ofx && npm run build"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost pcache: http://pcache.localhost http://127.0.0.1:* data: blob:; media-src 'self' asset: http://asset.localhost http://127.0.0.1:* blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws: wss:"
+    }
+  },
+  "bundle": {
+    "targets": ["appimage", "deb"],
+    "resources": {
+      "ffmpeg": "ffmpeg",
+      "ofx": "ofx",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../LICENSE-MIT": "LICENSE-MIT",
+      "../LICENSE-APACHE": "LICENSE-APACHE"
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "section": "video",
+        "depends": ["gstreamer1.0-plugins-base", "gstreamer1.0-plugins-good", "gstreamer1.0-libav"]
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 mod commands;
 mod hub;
+mod media_server;
 mod preflight;
 mod state;
 
@@ -43,12 +44,7 @@ fn cache_protocol<R: tauri::Runtime>(app: &tauri::AppHandle<R>, uri_path: &str) 
     if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return deny(403);
     }
-    let mime = match rel.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("png") => "image/png",
-        Some("webp") => "image/webp",
-        _ => return deny(403),
-    };
+    let Some(mime) = media_server::mime(rel).filter(|m| matches!(*m, "image/jpeg" | "image/png" | "image/webp")) else { return deny(403) };
     match std::fs::read(st.cache_dir.join(rel)) {
         Ok(bytes) => tauri::http::Response::builder().header("Content-Type", mime).header("Cache-Control", "no-cache").body(bytes).unwrap(),
         Err(_) => deny(404),
@@ -82,10 +78,21 @@ pub fn run() {
             let config = app.path().app_config_dir().unwrap_or_else(|_| cache.join("config"));
             std::fs::create_dir_all(&config)?;
             app.manage(state::AppState::new(cache, config));
+            // WebKitGTK's media player refuses custom URI schemes (see media_server.rs).
+            // A start-up failure is kept and shown in the app: without the server, nothing plays.
+            let media_base = cfg!(target_os = "linux").then(|| {
+                media_server::start(app.handle().clone()).map_err(|e| {
+                    let msg = format!("Video and audio cannot play: the local media server could not start ({e}).");
+                    eprintln!("pirosman-studio: {msg}");
+                    msg
+                })
+            });
+            app.manage(media_server::MediaBase(media_base));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_view,
+            media_server::media_base_url,
             commands::new_project,
             commands::open_project,
             commands::save_project,
