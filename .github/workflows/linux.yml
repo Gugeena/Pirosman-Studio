@@ -1,3 +1,4 @@
+
 name: Linux build
 
 on:
@@ -19,16 +20,20 @@ jobs:
       CARGO_TERM_COLOR: always
       # linuxdeploy (AppImage) cannot mount FUSE on the runner.
       APPIMAGE_EXTRACT_AND_RUN: "1"
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Diagnose libunwind package conflict
         run: |
           apt-cache policy libunwind-dev libunwind-15-dev
           dpkg -l 'libunwind*' || true
           apt-mark showhold
+
       - name: Install Tauri and media dependencies
         run: |
           sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libunwind-dev
           sudo apt-get install -y --no-install-recommends \
             build-essential curl file patchelf xz-utils libssl-dev libxdo-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
