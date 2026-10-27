@@ -21,7 +21,11 @@ jobs:
       APPIMAGE_EXTRACT_AND_RUN: "1"
     steps:
       - uses: actions/checkout@v4
-
+      - name: Diagnose libunwind package conflict
+        run: |
+          apt-cache policy libunwind-dev libunwind-15-dev
+          dpkg -l 'libunwind*' || true
+          apt-mark showhold
       - name: Install Tauri and media dependencies
         run: |
           sudo apt-get update
