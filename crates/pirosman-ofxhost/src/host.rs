@@ -1216,12 +1216,28 @@ mod os {
 
 #[cfg(not(windows))]
 mod os {
-    use std::ffi::c_void;
-    pub fn load(_path: &str) -> Result<*mut c_void, String> {
-        Err("OpenFX hosting is implemented for Windows only".into())
+    use std::ffi::{c_char, c_int, c_void, CStr, CString};
+    extern "C" {
+        fn dlopen(file: *const c_char, mode: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+        fn dlerror() -> *mut c_char;
     }
-    pub fn sym(_m: *mut c_void, _name: &str) -> *mut c_void {
-        std::ptr::null_mut()
+    const RTLD_NOW: c_int = 2;
+
+    pub fn load(path: &str) -> Result<*mut c_void, String> {
+        let c = CString::new(path).map_err(|_| format!("could not load {path}: the path contains a NUL byte"))?;
+        let m = unsafe { dlopen(c.as_ptr(), RTLD_NOW) };
+        if m.is_null() {
+            let e = unsafe { dlerror() };
+            let why = if e.is_null() { "unknown error".into() } else { unsafe { CStr::from_ptr(e) }.to_string_lossy().into_owned() };
+            Err(format!("could not load {path}: {why}"))
+        } else {
+            Ok(m)
+        }
+    }
+    pub fn sym(m: *mut c_void, name: &str) -> *mut c_void {
+        let c = CString::new(name).unwrap();
+        unsafe { dlsym(m, c.as_ptr()) }
     }
 }
 

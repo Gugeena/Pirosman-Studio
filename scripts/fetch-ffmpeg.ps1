@@ -23,12 +23,11 @@ $VersionId = "9.0.2-essentials_build-www.gyan.dev"   # first line of `ffmpeg -ve
 if ($TestExpectedSha256) { $Sha256 = $TestExpectedSha256.ToLower() }
 $Prefix    = "ffmpeg-9.0.2-essentials_build/"
 
-# Everything Pirosman Studio asks FFmpeg for (render.rs, media.rs, scopes.rs).
-$Encoders = "libx264", "libx265", "mpeg4", "prores_ks", "dnxhd", "aac", "pcm_s16le", "png", "mjpeg", "rawvideo"
-$Filters  = "adelay", "afade", "aformat", "amix", "anullsrc", "apad", "aresample", "asetpts", "atempo", "atrim", "blend", "color",
-            "colorchannelmixer", "colorlevels", "crop", "drawtext", "eq", "equalizer", "fade", "format", "fps", "gblur", "lut3d",
-            "noise", "overlay", "pad", "pan", "rgbashift", "rotate", "scale", "setpts", "showwavespic", "tpad", "trim", "vignette",
-            "volume", "reverse", "areverse", "split", "asplit", "null", "anull"
+# Everything Pirosman Studio asks FFmpeg for: one list shared with fetch-ffmpeg.sh, kept
+# complete by a render test (render_filters_are_all_required_of_the_pinned_ffmpeg).
+$req = Get-Content (Join-Path $PSScriptRoot "ffmpeg-requirements.txt")
+$Encoders = @($req | Where-Object { $_ -match '^encoder ' } | ForEach-Object { $_.Split(" ")[1] })
+$Filters  = @($req | Where-Object { $_ -match '^filter ' } | ForEach-Object { $_.Split(" ")[1] })
 
 $root  = Split-Path $PSScriptRoot -Parent
 $cache = Join-Path $root ".cache\ffmpeg"

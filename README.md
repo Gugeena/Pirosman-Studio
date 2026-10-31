@@ -19,7 +19,7 @@ The goal is to bring video editing, version control and team collaboration toget
 
 ## Installation and launch
 
-Pirosman Studio runs on 64-bit Windows 10 (version 1809 or later) and Windows 11.
+Pirosman Studio runs on 64-bit Windows 10 (version 1809 or later) and Windows 11, and on 64-bit (x86_64) Linux (see [Linux](#3-linux-x86_64)).
 
 ### 1. Setup installer
 
@@ -43,11 +43,26 @@ If you use `Pirosman-Studio_..._x64-portable.zip`:
 
 The portable version needs no installation. The `README.txt` inside the ZIP (source: [`packaging/PORTABLE_README.txt`](packaging/PORTABLE_README.txt)) covers troubleshooting: the SmartScreen warning, the WebView2 Runtime, a damaged FFmpeg, sharing projects and Live Sync.
 
-### 3. Media processing
+### 3. Linux (x86_64)
+
+Two Linux downloads are built from the same source:
+
+- `Pirosman-Studio_..._amd64.AppImage`: one self-contained file. Make it executable (`chmod +x`) and run it. It carries its own WebKitGTK and GStreamer.
+- `Pirosman-Studio_..._amd64.deb`: for Debian and Ubuntu. Install it with `sudo apt install ./Pirosman-Studio_..._amd64.deb`; it uses the system's WebKitGTK and GStreamer (installed as dependencies) and puts the app in the menu as Pirosman Studio.
+
+Both have been tested on Ubuntu 26.04 (under WSL2): import, thumbnails, video preview, export, save and reopen, including paths with spaces and non-ASCII characters. The Linux CI workflow builds both on Ubuntu 22.04 and launch-tests them. Other distributions have not been tested. The bundled FFmpeg needs glibc 2.28 or newer. The AppImage is large (about 300 MB) because it carries FFmpeg, WebKitGTK and GStreamer.
+
+### 4. Media processing
 
 Pirosman Studio uses FFmpeg and FFprobe to read media information, preview video and export.
 
-**FFmpeg 9.0.2 and FFprobe are bundled with the app.** The version is pinned and its checksum is verified at build time. You do not need to install WinGet, run terminal commands or download FFmpeg separately. FFmpeg is distributed under its own GPL v3 license (see [License](#license)).
+**FFmpeg 9.0.2 and FFprobe are bundled with the app** on Windows and Linux. The version is pinned per platform and its checksum is verified at build time. You do not need to install FFmpeg, WinGet or anything else, or run terminal commands. FFmpeg is distributed under its own GPL v3 license (see [License](#license)).
+
+How the app finds FFmpeg, in order:
+
+1. `PIROSMAN_FFMPEG_DIR`, if set: a folder with `ffmpeg` and `ffprobe` (`.exe` on Windows). Advanced use only; if it is set but unusable, the app reports that instead of looking elsewhere.
+2. The bundled copy, in the `ffmpeg` folder among the app's files. It is checked against its `manifest.json` (file sizes and version) before use.
+3. Only if the bundled copy is missing or damaged: an FFmpeg installed on the system (`PATH`, then common folders). The app then shows why the bundled copy was rejected (Help > FFmpeg status).
 
 ## Projects and files
 
@@ -195,7 +210,8 @@ The Resolve inspector reads only the list of installed files, PE headers, versio
 
 - **Effects library:** on the Edit page, next to the Media Pool. Built-in effects and every installed OpenFX plugin, with a separate tab for each vendor (for example Sapphire, BCC).
 - **Usage:** drag an effect onto a clip on the timeline, or double-click it to add it to the selected clips. Parameters are edited in the Inspector.
-- **Safety:** plugins run in a separate process (`pirosman-ofxhost.exe`), so a faulty plugin cannot crash the editor.
+- **Safety:** plugins run in a separate process (`pirosman-ofxhost`, `.exe` on Windows), so a faulty plugin cannot crash the editor.
+- **Where plugins are found:** `C:\Program Files\Common Files\OFX\Plugins` on Windows, `/usr/OFX/Plugins` on Linux, and any folder in `OFX_PLUGIN_PATH`. Only the bundled samples have been tested on Linux.
 - **Rendering:** export, Render preview and the paused monitor frame are computed exactly through the plugin.
 - **Sample plugins:** the app ships with "Pirosman Samples" (Invert, Tint, Posterize, Echo).
 
@@ -224,7 +240,8 @@ Test counts and supported features apply to the specific build.
 - Live Sync is meant for a local network, uses an unencrypted connection, and resolves conflicts by letting the last change win.
 - Media paths in a project are absolute; when moving to another computer, use a project bundle and media relinking.
 - `.drp`/`.drt` import is limited to files that embed supported FCP7 XML or OTIO data.
-- macOS and Linux are not currently supported.
+- macOS is not supported.
+- Linux: x86_64 only (no ARM64 build yet), tested on Ubuntu 26.04 only. Title fonts are named after Windows fonts; on Linux, fontconfig picks each one or its usual stand-in (e.g. Liberation Sans for Arial), so titles can look slightly different from Windows. WebKitGTK cannot play media from the app's own URL scheme, so on Linux audio and video reach the editor through a small server on 127.0.0.1 that serves only the project's files and requires a random key generated at each launch.
 
 ## Building from source (for developers)
 
@@ -237,10 +254,22 @@ This section is for developers only; users of the installer or the portable vers
 | `crates/pirosman-core/` | Project model, editing, rendering, revisions; `src/parity.json` is the feature status registry built into the app |
 | `crates/pirosman-ofxhost/` | Out-of-process host for OpenFX plugins |
 | `crates/pirosman-ofx-samples/` | Sample OpenFX plugins |
-| `scripts/` | PowerShell build and packaging scripts |
-| `packaging/` | Text files included in releases: the portable README and the FFmpeg notice |
+| `scripts/` | Build and packaging scripts: PowerShell (`.ps1`) for Windows, bash (`.sh`) for Linux; `npm run fetch-ffmpeg` and `npm run build:ofx` run the right one |
+| `packaging/` | Text files included in releases: the portable README and the FFmpeg notices |
+| `.github/workflows/` | CI: the Linux build, tests and packages |
 
-Requirements: Windows 10/11 x64, Rust (stable, MSVC toolchain), Node.js and npm, plus Visual Studio or Visual Studio Build Tools with the "Desktop development with C++" workload and a Windows 10/11 SDK (required by Rust's MSVC linker). The first build needs an internet connection to download the pinned FFmpeg. On Windows, `tauri dev` and `tauri build` run `npm run fetch-ffmpeg` and `npm run build:ofx` automatically.
+Requirements on Windows: Windows 10/11 x64, Rust (stable, MSVC toolchain), Node.js and npm, plus Visual Studio or Visual Studio Build Tools with the "Desktop development with C++" workload and a Windows 10/11 SDK (required by Rust's MSVC linker).
+
+Requirements on Linux (x86_64; the commands are for Debian/Ubuntu, as in `.github/workflows/linux.yml`): Rust (stable), Node.js and npm, and the Tauri and media packages:
+
+```bash
+sudo apt install build-essential curl file patchelf xz-utils libssl-dev libxdo-dev \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev fontconfig
+```
+
+The first build needs an internet connection to download the pinned FFmpeg. `tauri dev` and `tauri build` run `npm run fetch-ffmpeg` and `npm run build:ofx` automatically on both platforms.
 
 ```bash
 npm ci
@@ -266,17 +295,26 @@ $env:PIROSMAN_TEST_REQUIRE_BUNDLED = "1"
 cargo test --workspace
 ```
 
-Building the installer and the portable ZIP (into `dist-release\`):
+On Linux the same variables work: `PIROSMAN_TEST_BUNDLED_DIR="$PWD/src-tauri/ffmpeg" PIROSMAN_TEST_REQUIRE_BUNDLED=1 cargo test -p pirosman-core`.
+
+Building the Windows installer and the portable ZIP (into `dist-release\`):
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1
+```
+
+Building the Linux AppImage and .deb (into `dist-release/`), on x86_64 Linux. The script unpacks both packages and checks their contents (bundled FFmpeg and OpenFX host present and executable, licenses, no Windows files, no local paths):
+
+```bash
+bash scripts/package-linux.sh
+bash scripts/smoke-linux.sh dist-release/Pirosman-Studio_*_amd64.AppImage   # optional: launch check (needs xvfb-run, strace)
 ```
 
 ## License
 
 Pirosman Studio is available under your choice of the MIT or Apache-2.0 license: see [`LICENSE-MIT`](LICENSE-MIT) and [`LICENSE-APACHE`](LICENSE-APACHE).
 
-The FFmpeg bundled in the installer and the portable version is distributed under its own GPL v3 license: see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+The FFmpeg bundled in the Windows installer, the portable version and the Linux packages is distributed under its own GPL v3 license: see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Keyboard shortcuts
 

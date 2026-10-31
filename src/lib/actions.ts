@@ -1,6 +1,7 @@
 // User-level flows that combine native dialogs with commands.
-import { open, save, ask } from "@tauri-apps/plugin-dialog";
+import { open, ask } from "@tauri-apps/plugin-dialog";
 import { api } from "./api";
+import { saveDialog } from "./files";
 import { attempt, errText, run, useUI } from "./store";
 
 const MEDIA_EXT = ["mp4", "mov", "m4v", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "wav", "mp3", "m4a", "aac", "flac", "ogg", "opus", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp"];
@@ -22,7 +23,7 @@ export async function saveFlow(saveAs = false): Promise<boolean> {
   const v = useUI.getState().view;
   if (!v) return false;
   if (v.path && !saveAs) return run(api.saveProject(), "Project saved");
-  const path = await save({ defaultPath: `${v.project.name}.pirosman`, filters: [{ name: "Pirosman project", extensions: ["pirosman"] }] });
+  const path = await saveDialog(`${v.project.name}.pirosman`, { filters: [{ name: "Pirosman project", extensions: ["pirosman"] }] });
   if (!path) return false;
   return run(api.saveProject(path), "Project saved");
 }
@@ -67,7 +68,7 @@ export async function relinkFlow(mediaId: string) {
 export async function exportBundleFlow(branches: string[], includeMedia: boolean) {
   const v = useUI.getState().view;
   if (!v) return;
-  const path = await save({ defaultPath: `${v.project.name}-${branches.join("+").replace(/[^\w.-]+/g, "_")}.pirosman-bundle`, filters: [{ name: "Pirosman bundle", extensions: ["pirosman-bundle"] }] });
+  const path = await saveDialog(`${v.project.name}-${branches.join("+").replace(/[^\w.-]+/g, "_")}.pirosman-bundle`, { filters: [{ name: "Pirosman bundle", extensions: ["pirosman-bundle"] }] });
   if (!path) return;
   const r = await attempt(api.bundleExport(branches, includeMedia, path, useUI.getState().author));
   if (r) useUI.getState().toast("ok", `Bundle written: ${r.revisions} revision${r.revisions === 1 ? "" : "s"}, ${r.media_included} media file${r.media_included === 1 ? "" : "s"} (${(r.bytes / 1048576).toFixed(1)} MB)`);
@@ -98,7 +99,7 @@ export async function importArchiveFlow() {
   const bundle = await open({ multiple: false, title: "Choose a revision bundle", filters: [{ name: "Pirosman bundle", extensions: ["pirosman-bundle"] }] });
   if (typeof bundle !== "string") return;
   const stem = bundle.replace(/^.*[\\/]/, "").replace(/\.pirosman-bundle$/i, "");
-  const dest = await save({ title: "Save the new project as", defaultPath: `${stem}.pirosman`, filters: [{ name: "Pirosman project", extensions: ["pirosman"] }] });
+  const dest = await saveDialog(`${stem}.pirosman`, { title: "Save the new project as", filters: [{ name: "Pirosman project", extensions: ["pirosman"] }] });
   if (!dest) return;
   useUI.getState().toast("info", "Unpacking the bundle and its history…");
   const path = await attempt(api.hubImportArchive(bundle, dest));
@@ -132,7 +133,7 @@ export async function importTimelineFlow() {
 export async function exportOtioFlow() {
   const v = useUI.getState().view;
   if (!v) return;
-  const path = await save({ defaultPath: `${v.project.name}.otio`, filters: [{ name: "OpenTimelineIO", extensions: ["otio"] }] });
+  const path = await saveDialog(`${v.project.name}.otio`, { filters: [{ name: "OpenTimelineIO", extensions: ["otio"] }] });
   if (!path) return;
   const out = await attempt(api.exportOtio(path));
   if (out) useUI.getState().toast("ok", `OpenTimelineIO written: ${out}`);
@@ -141,7 +142,7 @@ export async function exportOtioFlow() {
 export async function grabStillFlow(frame: number) {
   const v = useUI.getState().view;
   if (!v) return;
-  const path = await save({ defaultPath: `${v.project.name}-frame${frame}.png`, filters: [{ name: "PNG image", extensions: ["png"] }] });
+  const path = await saveDialog(`${v.project.name}-frame${frame}.png`, { filters: [{ name: "PNG image", extensions: ["png"] }] });
   if (!path) return;
   useUI.getState().toast("info", "Rendering the graded frame…");
   const out = await attempt(api.grabStill(frame, path));

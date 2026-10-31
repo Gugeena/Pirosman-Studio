@@ -1,5 +1,7 @@
 # Store text with LF line endings in the repository.
 * text=auto
+# Shell scripts run under bash on Linux (and Git Bash): never CRLF.
+*.sh text eol=lf
 
 # Binary assets
 *.png binary

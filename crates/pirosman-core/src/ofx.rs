@@ -632,7 +632,7 @@ mod tests {
         let host = target.join(host_name());
         let dll = target.join(if cfg!(windows) { "pirosman_ofx_samples.dll" } else if cfg!(target_os = "macos") { "libpirosman_ofx_samples.dylib" } else { "libpirosman_ofx_samples.so" });
         let ff = root.join("src-tauri").join("ffmpeg");
-        if !host.is_file() || !dll.is_file() || !ff.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX)).is_file() || !cfg!(windows) {
+        if !host.is_file() || !dll.is_file() || !ff.join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX)).is_file() {
             eprintln!("skipped: build pirosman-ofxhost and pirosman-ofx-samples and fetch FFmpeg first");
             return;
         }

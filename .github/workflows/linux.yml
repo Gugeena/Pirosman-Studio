@@ -1,0 +1,102 @@
+
+name: Linux build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The job only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    # The oldest supported runner: the AppImage then runs on glibc 2.35 and newer.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      # linuxdeploy (AppImage) cannot mount FUSE on the runner.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Diagnose libunwind package conflict
+        run: |
+          apt-cache policy libunwind-dev libunwind-15-dev
+          dpkg -l 'libunwind*' || true
+          apt-mark showhold
+
+      - name: Install Tauri and media dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libunwind-dev
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl file patchelf xz-utils libssl-dev libxdo-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            fontconfig fonts-dejavu-core xvfb xauth strace
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache the pinned FFmpeg download
+        uses: actions/cache@v4
+        with:
+          path: .cache/ffmpeg/*.tar.xz
+          key: ffmpeg-linux-x86_64-${{ hashFiles('scripts/fetch-ffmpeg.sh') }}
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Fetch and verify the pinned FFmpeg
+        run: npm run fetch-ffmpeg
+
+      - name: Frontend typecheck
+        run: npm run typecheck
+
+      - name: Core tests against the bundled FFmpeg
+        env:
+          PIROSMAN_TEST_BUNDLED_DIR: ${{ github.workspace }}/src-tauri/ffmpeg
+          PIROSMAN_TEST_REQUIRE_BUNDLED: "1"
+        run: |
+          # The OpenFX render test loads these debug builds of the host and sample plugins.
+          cargo build -p pirosman-ofxhost -p pirosman-ofx-samples
+          cargo test -p pirosman-core -p pirosman-ofxhost
+
+      - name: Build the AppImage and .deb
+        run: bash scripts/package-linux.sh
+
+      - name: App shell tests (media server)
+        run: cargo test -p pirosman-studio
+
+      - name: Core tests against the FFmpeg inside the .deb
+        run: |
+          dir="$(dirname "$(find target/linux-check/deb -path '*/ffmpeg/manifest.json' | head -n1)")"
+          PIROSMAN_TEST_BUNDLED_DIR="$PWD/$dir" PIROSMAN_TEST_REQUIRE_BUNDLED=1 cargo test -p pirosman-core --test ffmpeg_integration
+
+      - name: Install the .deb and launch it
+        run: |
+          sudo apt-get install -y ./dist-release/Pirosman-Studio_*_amd64.deb
+          bash scripts/smoke-linux.sh pirosman-studio
+
+      - name: Launch the AppImage
+        run: bash scripts/smoke-linux.sh "$PWD/$(ls dist-release/Pirosman-Studio_*_amd64.AppImage)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pirosman-studio-linux-x86_64
+          path: |
+            dist-release/Pirosman-Studio_*_amd64.AppImage
+            dist-release/Pirosman-Studio_*_amd64.deb
+          if-no-files-found: error
